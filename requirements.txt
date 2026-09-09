@@ -1,0 +1,7 @@
+streamlit
+langchain==0.3.25
+langchain-openai
+langchain-community
+langgraph
+tavily-python
+python-dotenv
