@@ -36,42 +36,63 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ─── Language Selector ─────────────────────────────────────────
-# Language toggle
-st.markdown("""
-<style>
-.lang-label {
-    font-size: 13px;
-    color: #888;
-    margin-bottom: 6px;
-    font-weight: 500;
-    letter-spacing: 0.5px;
-}
-div[data-testid="column"] button {
-    border-radius: 6px !important;
-    font-size: 14px !important;
-    font-weight: 500 !important;
-}
-</style>
-<p class="lang-label">Choose Language</p>
-""", unsafe_allow_html=True)
-
-col_lang1, col_lang2, col_lang3 = st.columns([1.2, 1.2, 5])
-with col_lang1:
-    en_style = "primary" if st.session_state.get("lang","en") == "en" else "secondary"
-    if st.button("English", type=en_style):
-        st.session_state["lang"] = "en"
-        st.rerun()
-with col_lang2:
-    ar_style = "primary" if st.session_state.get("lang","en") == "ar" else "secondary"
-    if st.button("العربية", type=ar_style):
-        st.session_state["lang"] = "ar"
-        st.rerun()
-
 if "lang" not in st.session_state:
     st.session_state["lang"] = "en"
 
 lang = st.session_state["lang"]
 is_ar = lang == "ar"
+
+# ─── Hero + Language Toggle ────────────────────────────────────
+st.markdown("""
+<style>
+.hero-title {
+    font-size: 2.6rem;
+    font-weight: 700;
+    text-align: center;
+    margin-bottom: 0.2rem;
+}
+.hero-sub {
+    font-size: 1rem;
+    text-align: center;
+    color: #888;
+    margin-bottom: 1.8rem;
+}
+.lang-label {
+    text-align: center;
+    font-size: 13px;
+    color: #aaa;
+    font-weight: 500;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+}
+div[data-testid="column"] button {
+    border-radius: 6px !important;
+    font-size: 14px !important;
+    font-weight: 500 !important;
+    width: 100% !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown('<div class="hero-title">✈️ AI Travel Planner</div>', unsafe_allow_html=True)
+hero_sub = '<div class="hero-sub">قولنا عايز تروح فين وإحنا هنخطط كل حاجة عنك.</div>' if is_ar else "<div class='hero-sub'>Tell us where you want to go and we will plan everything for you.</div>"
+st.markdown(hero_sub, unsafe_allow_html=True)
+
+st.markdown('<div class="lang-label">Choose Language</div>', unsafe_allow_html=True)
+col_lang1, col_lang2, col_lang3 = st.columns([1, 1, 4])
+with col_lang1:
+    en_style = "primary" if st.session_state.get("lang","en") == "en" else "secondary"
+    if st.button("English", type=en_style, use_container_width=True):
+        st.session_state["lang"] = "en"
+        st.rerun()
+with col_lang2:
+    ar_style = "primary" if st.session_state.get("lang","en") == "ar" else "secondary"
+    if st.button("العربية", type=ar_style, use_container_width=True):
+        st.session_state["lang"] = "ar"
+        st.rerun()
+
+st.markdown("---")
 
 # ─── Text Content ──────────────────────────────────────────────
 T = {
@@ -161,15 +182,7 @@ T = {
 def t(key):
     return T[key][lang]
 
-# ─── Header ────────────────────────────────────────────────────
-if is_ar:
-    st.markdown(f'<div class="rtl"><h1>{t("title")}</h1><p>{t("subtitle")}</p></div>',
-                unsafe_allow_html=True)
-else:
-    st.title(t("title"))
-    st.markdown(t("subtitle"))
 
-st.markdown("---")
 
 # ─── Sidebar ───────────────────────────────────────────────────
 # Read API keys from Streamlit secrets (production) or environment (local)
