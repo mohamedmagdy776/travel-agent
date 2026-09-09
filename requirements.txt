@@ -1,7 +1,7 @@
 streamlit
-langchain==0.3.25
-langchain-openai==0.2.14
-langchain-community==0.3.24
-langgraph==0.2.73
+langchain
+langchain-openai
+langchain-community
+langgraph
 tavily-python
 python-dotenv
