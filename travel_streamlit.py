@@ -36,13 +36,28 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ─── Language Selector ─────────────────────────────────────────
-col_lang1, col_lang2, col_lang3 = st.columns([1, 1, 4])
+# Language toggle - clean pill style
+st.markdown("""
+<style>
+div[data-testid="column"] button {
+    border-radius: 20px !important;
+    padding: 4px 20px !important;
+    font-size: 14px !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+col_lang1, col_lang2, col_lang3 = st.columns([1, 1, 6])
 with col_lang1:
-    if st.button("🇬🇧 English"):
+    en_style = "primary" if st.session_state.get("lang","en") == "en" else "secondary"
+    if st.button("🇬🇧 EN", type=en_style):
         st.session_state["lang"] = "en"
+        st.rerun()
 with col_lang2:
-    if st.button("🇸🇦 العربية"):
+    ar_style = "primary" if st.session_state.get("lang","en") == "ar" else "secondary"
+    if st.button("🇸🇦 AR", type=ar_style):
         st.session_state["lang"] = "ar"
+        st.rerun()
 
 if "lang" not in st.session_state:
     st.session_state["lang"] = "en"
@@ -55,9 +70,7 @@ T = {
     "title":            {"en": "✈️ AI Travel Planner",       "ar": "✈️ مخطط السفر الذكي"},
     "subtitle":         {"en": "Tell us where you want to go and we'll plan everything for you.",
                          "ar": "قولنا عايز تروح فين وإحنا هنخطط كل حاجة عنك."},
-    "setup":            {"en": "⚙️ Setup",                   "ar": "⚙️ الإعدادات"},
-    "openai_key":       {"en": "OpenAI API Key",             "ar": "مفتاح OpenAI"},
-    "tavily_key":       {"en": "Tavily API Key",             "ar": "مفتاح Tavily"},
+
     "what_we_do":       {"en": "**What we do for you:**",    "ar": "**إيه اللي بنعمله عشانك:**"},
     "where":            {"en": "Where are you going?",       "ar": "عايز تروح فين؟"},
     "from":             {"en": "Flying from",                "ar": "السفر من"},
@@ -93,7 +106,7 @@ T = {
     "btn":              {"en": "🔍 Plan My Trip",            "ar": "🔍 خطط رحلتي"},
     "no_from":          {"en": "Please enter your departure city.",   "ar": "من فضلك ادخل مدينة السفر."},
     "no_to":            {"en": "Please enter your destination.",      "ar": "من فضلك ادخل الوجهة."},
-    "no_key":           {"en": "Please enter your OpenAI API key.",   "ar": "من فضلك ادخل مفتاح OpenAI."},
+
     "planning":         {"en": "Planning your trip to",      "ar": "بيتم تخطيط رحلتك إلى"},
     "days_label":       {"en": "days",                       "ar": "يوم"},
     "steps": {
@@ -151,11 +164,25 @@ else:
 st.markdown("---")
 
 # ─── Sidebar ───────────────────────────────────────────────────
+# Read API keys from Streamlit secrets (production) or environment (local)
+import os
+try:
+    openai_key = st.secrets["OPENAI_API_KEY"]
+    tavily_key = st.secrets.get("TAVILY_API_KEY", "")
+    langsmith_key = st.secrets.get("LANGSMITH_API_KEY", "")
+    if langsmith_key:
+        os.environ["LANGSMITH_API_KEY"] = langsmith_key
+    if st.secrets.get("LANGCHAIN_TRACING_V2"):
+        os.environ["LANGCHAIN_TRACING_V2"] = st.secrets["LANGCHAIN_TRACING_V2"]
+    if st.secrets.get("LANGCHAIN_PROJECT"):
+        os.environ["LANGCHAIN_PROJECT"] = st.secrets["LANGCHAIN_PROJECT"]
+    if st.secrets.get("LANGCHAIN_ENDPOINT"):
+        os.environ["LANGCHAIN_ENDPOINT"] = st.secrets["LANGCHAIN_ENDPOINT"]
+except:
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    tavily_key = os.environ.get("TAVILY_API_KEY", "")
+
 with st.sidebar:
-    st.header(t("setup"))
-    openai_key = st.text_input(t("openai_key"), type="password")
-    tavily_key = st.text_input(t("tavily_key"), type="password")
-    st.markdown("---")
     st.markdown(t("what_we_do"))
     for item in t("sidebar_items"):
         st.markdown(item)
@@ -225,15 +252,8 @@ if submitted:
     if not to_city:
         st.error(t("no_to"))
         st.stop()
-    if not openai_key:
-        st.error(t("no_key"))
-        st.stop()
-
-    # Set API keys from sidebar input
-    os.environ["OPENAI_API_KEY"]          = openai_key
-    os.environ["LANGCHAIN_TRACING_V2"]    = "true"
-    os.environ["LANGCHAIN_PROJECT"]       = "Travel_agent"
-    os.environ["LANGCHAIN_ENDPOINT"]      = "https://api.smith.langchain.com"
+    # Set API keys from secrets
+    os.environ["OPENAI_API_KEY"] = openai_key
     if tavily_key:
         os.environ["TAVILY_API_KEY"] = tavily_key
 
