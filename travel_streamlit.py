@@ -59,12 +59,11 @@ st.markdown("""
 }
 .lang-label {
     text-align: center;
-    font-size: 13px;
-    color: #aaa;
-    font-weight: 500;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-    margin-bottom: 8px;
+    font-size: 1.05rem;
+    color: #666;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    margin-bottom: 10px;
 }
 div[data-testid="column"] button {
     border-radius: 6px !important;
@@ -80,7 +79,7 @@ hero_sub = '<div class="hero-sub">قولنا عايز تروح فين وإحنا
 st.markdown(hero_sub, unsafe_allow_html=True)
 
 st.markdown('<div class="lang-label">Choose Language</div>', unsafe_allow_html=True)
-col_lang1, col_lang2, col_lang3 = st.columns([1, 1, 4])
+col_lang0, col_lang1, col_lang2, col_lang3 = st.columns([2, 1, 1, 2])
 with col_lang1:
     en_style = "primary" if st.session_state.get("lang","en") == "en" else "secondary"
     if st.button("English", type=en_style, use_container_width=True):
