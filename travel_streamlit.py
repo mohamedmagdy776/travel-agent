@@ -36,26 +36,34 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ─── Language Selector ─────────────────────────────────────────
-# Language toggle - clean pill style
+# Language toggle
 st.markdown("""
 <style>
+.lang-label {
+    font-size: 13px;
+    color: #888;
+    margin-bottom: 6px;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+}
 div[data-testid="column"] button {
-    border-radius: 20px !important;
-    padding: 4px 20px !important;
+    border-radius: 6px !important;
     font-size: 14px !important;
+    font-weight: 500 !important;
 }
 </style>
+<p class="lang-label">Choose Language</p>
 """, unsafe_allow_html=True)
 
-col_lang1, col_lang2, col_lang3 = st.columns([1, 1, 6])
+col_lang1, col_lang2, col_lang3 = st.columns([1.2, 1.2, 5])
 with col_lang1:
     en_style = "primary" if st.session_state.get("lang","en") == "en" else "secondary"
-    if st.button("🇬🇧 EN", type=en_style):
+    if st.button("English", type=en_style):
         st.session_state["lang"] = "en"
         st.rerun()
 with col_lang2:
     ar_style = "primary" if st.session_state.get("lang","en") == "ar" else "secondary"
-    if st.button("🇸🇦 AR", type=ar_style):
+    if st.button("العربية", type=ar_style):
         st.session_state["lang"] = "ar"
         st.rerun()
 
