@@ -24,9 +24,7 @@ from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_community.tools.tavily_search import TavilySearchResults
-from langchain.agents import AgentExecutor
 from langgraph.prebuilt import create_react_agent
-
 from langgraph.graph import StateGraph, END
 
 try:
@@ -223,7 +221,7 @@ ACTIVITIES_SYSTEM = """You are the Activities agent. You have access to a web se
 Rules:
 - Search for SPECIFIC named activities at the destination.
 - For each activity include: exact name, location, price, duration, rating (if available), why it is special.
-- Examples of good output: 
+- Examples of good output:
   "Snorkeling at Elphinstone Reef — rated 4.9/5, one of top 10 dive sites in the world, depth 50m, 45 min by boat from port, costs 0-50"
   "Quad biking in the desert with Marsa Alam Adventures — 2 hours, 5/person, pickup from hotel included"
 - NEVER write vague things like "enjoy water sports" or "explore the area"
@@ -240,7 +238,7 @@ Rules:
   "Sharm El Luli — secluded pink-sand beach, rated 4.9/5 on Google, accessible only by boat (20 min, 5), no facilities so bring food"
   "Hamata Mangroves — unique mangrove forest, great for kayaking, 1hr south of Marsa Alam, entry free"
 - For restaurants: name, cuisine type, price range, must-order dish, rating
-- NEVER say 'visit local restaurants' or 'explore the area'  
+- NEVER say 'visit local restaurants' or 'explore the area'
 - Use Tavily to search for real places with names and details.
 - After searching, formulate specific bullet-point notes."""
 
@@ -367,9 +365,16 @@ or any numerical evaluation in your output. Never write phrases like
 # ─────────────────────────────────────────────
 
 def _make_research_agent(system_prompt: str):
-    return create_react_agent(llm, tools, messages_modifier=SystemMessage(content=system_prompt))
+    """Create a research agent using LangGraph's create_react_agent."""
+    return create_react_agent(
+        llm,
+        tools,
+        messages_modifier=SystemMessage(content=system_prompt),
+    )
+
 
 def _invoke_agent(agent, query: str) -> str:
+    """Invoke a research agent and extract the final text response."""
     result = agent.invoke({"messages": [HumanMessage(content=query)]})
     return result["messages"][-1].content
 
@@ -394,64 +399,64 @@ def planner_node(state: GraphState) -> GraphState:
 
 def flight_node(state: GraphState) -> GraphState:
     agent = _make_research_agent(FLIGHT_SYSTEM)
-    result = agent.invoke({
-        "input": f"Find flights for: {state['question']}\nDestination: {state['plan']['destination']}\nDates: {state['plan']['travel_dates']}"
-    })
-    state["flight_notes"] = _parse_notes(result)
+    output = _invoke_agent(agent,
+        f"Find flights for: {state['question']}\nDestination: {state['plan']['destination']}\nDates: {state['plan']['travel_dates']}"
+    )
+    state["flight_notes"] = _parse_notes(output)
     return state
 
 
 def hotel_node(state: GraphState) -> GraphState:
     agent = _make_research_agent(HOTEL_SYSTEM)
-    result = agent.invoke({
-        "input": f"Find hotels for: {state['question']}\nDestination: {state['plan']['destination']}\nDates: {state['plan']['travel_dates']}\nDays: {state['plan']['num_days']}"
-    })
-    state["hotel_notes"] = _parse_notes(result)
+    output = _invoke_agent(agent,
+        f"Find hotels for: {state['question']}\nDestination: {state['plan']['destination']}\nDates: {state['plan']['travel_dates']}\nDays: {state['plan']['num_days']}"
+    )
+    state["hotel_notes"] = _parse_notes(output)
     return state
 
 
 def visa_node(state: GraphState) -> GraphState:
     agent = _make_research_agent(VISA_SYSTEM)
-    result = agent.invoke({
-        "input": f"Find visa requirements for: {state['question']}\nDestination: {state['plan']['destination']}"
-    })
-    state["visa_notes"] = _parse_notes(result)
+    output = _invoke_agent(agent,
+        f"Find visa requirements for: {state['question']}\nDestination: {state['plan']['destination']}"
+    )
+    state["visa_notes"] = _parse_notes(output)
     return state
 
 
 def weather_node(state: GraphState) -> GraphState:
     agent = _make_research_agent(WEATHER_SYSTEM)
-    result = agent.invoke({
-        "input": f"Find weather for {state['plan']['destination']} during {state['plan']['travel_dates']}"
-    })
-    state["weather_notes"] = _parse_notes(result)
+    output = _invoke_agent(agent,
+        f"Find weather for {state['plan']['destination']} during {state['plan']['travel_dates']}"
+    )
+    state["weather_notes"] = _parse_notes(output)
     return state
 
 
 def activities_node(state: GraphState) -> GraphState:
     agent = _make_research_agent(ACTIVITIES_SYSTEM)
-    result = agent.invoke({
-        "input": f"Find activities and experiences for: {state['question']}\nDestination: {state['plan']['destination']}\nPreferences: {state['plan'].get('traveler_preferences', [])}"
-    })
-    state["activities_notes"] = _parse_notes(result)
+    output = _invoke_agent(agent,
+        f"Find activities and experiences for: {state['question']}\nDestination: {state['plan']['destination']}\nPreferences: {state['plan'].get('traveler_preferences', [])}"
+    )
+    state["activities_notes"] = _parse_notes(output)
     return state
 
 
 def places_node(state: GraphState) -> GraphState:
     agent = _make_research_agent(PLACES_SYSTEM)
-    result = agent.invoke({
-        "input": f"Find best places, landmarks, restaurants for: {state['question']}\nDestination: {state['plan']['destination']}\nPreferences: {state['plan'].get('traveler_preferences', [])}"
-    })
-    state["places_notes"] = _parse_notes(result)
+    output = _invoke_agent(agent,
+        f"Find best places, landmarks, restaurants for: {state['question']}\nDestination: {state['plan']['destination']}\nPreferences: {state['plan'].get('traveler_preferences', [])}"
+    )
+    state["places_notes"] = _parse_notes(output)
     return state
 
 
 def budget_node(state: GraphState) -> GraphState:
     agent = _make_research_agent(BUDGET_SYSTEM)
-    result = agent.invoke({
-        "input": f"Calculate travel budget for: {state['question']}\nDestination: {state['plan']['destination']}\nDays: {state['plan']['num_days']}"
-    })
-    state["budget_notes"] = _parse_notes(result)
+    output = _invoke_agent(agent,
+        f"Calculate travel budget for: {state['question']}\nDestination: {state['plan']['destination']}\nDays: {state['plan']['num_days']}"
+    )
+    state["budget_notes"] = _parse_notes(output)
     return state
 
 
