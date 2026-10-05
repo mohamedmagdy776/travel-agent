@@ -47,7 +47,8 @@ tools = [search_tool]
 class TravelPlan(BaseModel):
     destination: str = Field(..., description="Travel destination")
     travel_dates: str = Field(..., description="Proposed travel dates")
-    num_days: int = Field(..., description="Number of travel days")
+    num_days: int = Field(..., description="Number of travel days — must match EXACTLY what the user requested")
+    travel_style: str = Field("mid-range", description="Travel style: luxury, mid-range, or budget")
     traveler_preferences: List[str] = Field(..., description="What the traveler enjoys")
     steps: List[str] = Field(..., description="Ordered planning steps")
     key_risks: List[str] = Field(..., description="Major risks or unknowns")
@@ -126,6 +127,18 @@ Given a user's travel request:
 3. Identify key risks (visa, weather, budget, safety).
 4. Define output headings for the final itinerary.
 
+CRITICAL — num_days:
+- The user specifies EXACTLY how many days they want. Extract this number precisely.
+- num_days must match the user's request EXACTLY. If they say "3 days", num_days = 3.
+- Never add or subtract days from what the user requested.
+
+CRITICAL — travel_style:
+- Extract the travel style from the user's request (luxury, mid-range, budget).
+- If user says "فاخر" or "luxury", set travel_style = "luxury".
+- If user says "متوسط" or "mid-range", set travel_style = "mid-range".
+- If user says "اقتصادي" or "budget", set travel_style = "budget".
+- travel_style MUST influence ALL downstream recommendations.
+
 IMPORTANT — Transport intelligence:
 - If the destination has NO commercial airport (e.g. Marsa Matruh, Siwa, Dahab, Nuweiba),
   add to key_risks: 'No direct flights — ground transport required (bus/car)'
@@ -133,19 +146,36 @@ IMPORTANT — Transport intelligence:
 - Egyptian no-airport destinations: Marsa Matruh (bus from Cairo 5-6hrs),
   Siwa (bus 8hrs), Dahab (fly to Sharm + drive 1.5hrs)
 - Never recommend flights to destinations with no airport.
+- For LUXURY travel style: always prefer the fastest/most comfortable transport option.
+  If bus takes 8+ hours but flights exist to a nearby airport, recommend flight + private transfer.
 
 Return valid JSON matching the TravelPlan schema."""
 
-FLIGHT_SYSTEM = """You are the Flight agent. You have access to a web search tool called Tavily.
+FLIGHT_SYSTEM = """You are the Flight/Transport agent. You have access to a web search tool called Tavily.
+
+TRAVEL STYLE IS CRITICAL:
+- LUXURY: Recommend flights (business class if available), private transfers, premium transport ONLY.
+  NEVER recommend a public bus or shared minibus for luxury travelers.
+  If no direct flights exist, recommend: flight to nearest airport + private car/taxi transfer.
+  Example: Dahab luxury = fly to Sharm El Sheikh + private transfer (1.5hrs, ~500-800 EGP).
+- MID-RANGE: Recommend economy flights, mix of private and shared transport.
+- BUDGET: Recommend cheapest options — buses, shared transport, budget airlines.
+
 Rules:
-- Search for real flight options for the user's route and dates.
-- Find best airlines, price ranges (economy/business), flight duration, layovers.
+- Search for real transport options for the user's route and dates.
+- Find best airlines, price ranges, flight duration, layovers.
 - Include booking tips and best time to buy.
 - DO NOT include any booking links — links will be added automatically by the system.
-- If destination has no airport, suggest ground transport options with cost and duration instead.
+- If destination has no airport, suggest the BEST transport option for the travel style (see above).
 - Use Tavily when the question requires current, recent info.
 - Don't use Tavily when web search is unnecessary.
-- After searching, formulate bullet-point notes with airlines, prices, duration, and tips."""
+
+OUTPUT RULES — VERY IMPORTANT:
+- ONLY include transport/flight information: airlines, routes, prices, duration, tips.
+- DO NOT calculate total trip budget or budget breakdown — that is the Budget agent's job.
+- DO NOT include hotel costs, activity costs, or food costs.
+- ONLY write about how to GET THERE and GET BACK.
+- After searching, formulate bullet-point notes with transport options, prices, and duration."""
 
 HOTEL_SYSTEM = """You are the Hotel agent. You have access to a web search tool called Tavily.
 
@@ -249,9 +279,20 @@ BUDGET IS A HARD MAXIMUM — MOST IMPORTANT RULE:
 - NEVER recommend a plan that costs more than the budget.
 - Always leave a small buffer (10-15%) under the budget for unexpected expenses.
 
+CRITICAL — USE EXACT NUM_DAYS:
+- The number of days is provided in the query. Use EXACTLY that number.
+- If the user says 1 day, calculate budget for 1 day ONLY.
+- If the user says 3 days, calculate budget for 3 days ONLY.
+- NEVER calculate for more or fewer days than specified.
+
 BUDGET MATH — always calculate:
-1. Per-day budget = total budget / number of days
+1. Per-day budget = total budget / number of days (use EXACT num_days from query)
 2. Per-person-per-day = per-day budget / number of travelers
+
+TRAVEL STYLE IMPACT:
+- LUXURY: allocate more to premium experiences, 5-star hotels, private transport.
+- MID-RANGE: balanced allocation.
+- BUDGET: maximize savings, cheapest options.
 
 SMART ALLOCATION based on hotel meal plan:
 - ALL-INCLUSIVE: Hotel 75% | Outside activities 15% | Transport 5% | Misc 5%
@@ -266,6 +307,8 @@ RULES:
 - Total must NEVER exceed the budget. Leave 5% buffer.
 - Never add food budget if hotel is all-inclusive or full board.
 - Show final breakdown table clearly.
+- YOUR OUTPUT IS THE COMPLETE BUDGET SECTION — include total costs by category,
+  daily breakdown, comparison to user's budget, and remaining buffer.
 
 - Use preferred currency for ALL prices.
 - Use Tavily for current prices.
@@ -273,6 +316,25 @@ RULES:
 
 WRITER_SYSTEM = """You are the Writer agent for a travel planning system.
 Write a detailed, specific, useful travel plan.
+
+═══════════════════════════════════════════════════
+DAY COUNT — THE MOST CRITICAL RULE:
+═══════════════════════════════════════════════════
+- The plan JSON contains "num_days". This is the EXACT number of days the user wants.
+- Your day-by-day itinerary MUST have EXACTLY num_days days. No more, no less.
+- If num_days = 1, write ONLY "Day 1". NEVER add Day 2.
+- If num_days = 3, write Day 1, Day 2, Day 3. NEVER add Day 4.
+- If num_days = 7, write Day 1 through Day 7. NEVER add Day 8.
+- VIOLATING THIS RULE IS THE WORST POSSIBLE ERROR.
+
+═══════════════════════════════════════════════════
+TRAVEL STYLE — MUST INFLUENCE EVERYTHING:
+═══════════════════════════════════════════════════
+- The plan JSON contains "travel_style".
+- LUXURY: recommend premium restaurants, 5-star experiences, private tours, fine dining.
+  Never recommend street food stalls or cheap eateries as main options.
+- MID-RANGE: mix of nice restaurants and local gems.
+- BUDGET: focus on value, street food, free activities.
 
 STRICT RULES — never do these:
 - NEVER write vague phrases like "explore the city", "enjoy the nightlife", "discover local culture"
@@ -305,11 +367,15 @@ FOR FLIGHTS/TRANSPORT — present options in a table ONCE ONLY (NO links):
 | option 1 | Xhr | X ج.م | details |
 IMPORTANT: Do NOT repeat transport options anywhere else.
 
-BUDGET ALIGNMENT — CRITICAL:
-- Read the traveler's total budget carefully.
-- If budget is high, recommend premium experiences throughout the plan.
-- Make sure the day-by-day plan actually uses the budget well.
-- Show at the end: total estimated spend vs budget, and what to do with remaining budget.
+═══════════════════════════════════════════════════
+BUDGET SECTION — PLACEMENT RULES:
+═══════════════════════════════════════════════════
+- Put the FULL budget breakdown (total costs, category breakdown, daily breakdown) at the END of the plan
+  in a clearly labeled section: "💰 الميزانية" or "💰 Budget".
+- DO NOT put budget totals or breakdowns inside the transport/flights section.
+- The transport section should ONLY show transport option prices, NOT total trip budget.
+- Budget section should show: transport cost + hotel cost + activities cost + food cost = TOTAL
+  and compare to user's budget.
 
 Use ALL research notes: flights/transport, hotels, visa, weather, activities, places, budget.
 Include quick-reference summary table at top.
@@ -318,9 +384,21 @@ If a review exists, incorporate the fixes."""
 REVIEWER_SYSTEM = """You are the Travel Plan Reviewer — a domain-specific validator.
 You validate the LOGIC and COMPLETENESS of the travel plan.
 
+## DAY COUNT validation — MOST CRITICAL
+- The user requested a specific num_days. Count the days in the itinerary.
+- If the itinerary has MORE days than num_days, this is a CRITICAL error (-25 points).
+- If the itinerary has FEWER days than num_days, this is also an error (-15 points).
+- Add to fix_instructions: "Day count mismatch: user requested X days but itinerary has Y days. Fix to exactly X days."
+
+## Travel Style validation
+- Check if recommendations match the travel style (luxury/mid-range/budget).
+- If travel_style is "luxury" but plan recommends buses or budget hotels: -15 points.
+- Add to fix_instructions: "Travel style mismatch: user chose luxury but plan recommends [budget option]. Replace with premium alternative."
+
 ## Budget validation
 - Extract user's budget vs estimated total. Flag if over budget.
 - Suggest specific savings.
+- Check that the full budget breakdown is NOT inside the transport section.
 
 ## Logistics validation
 - Hotel far from activities? Unrealistic daily schedule (max 3-4 major)?
@@ -336,24 +414,49 @@ You validate the LOGIC and COMPLETENESS of the travel plan.
 - Travel warnings? Insurance? Emergency contacts?
 
 ## Scoring: Start at 100, deduct:
+- Day count mismatch: -25 | Travel style mismatch: -15
 - Budget exceeded: -20 | Missing visa: -15 | Unrealistic schedule: -10
 - No transit info: -10 | No airport transfer: -5 | No safety info: -5
 - Weather mismatch: -5 | Each hallucination risk: -5
+- Budget in wrong section: -10
 
 Return JSON matching the ReviewResult schema."""
 
 FINALIZER_SYSTEM = """You are the Finalizer agent.
 Produce the ultimate polished travel itinerary from all research and drafts.
 
+═══════════════════════════════════════════════════
+DAY COUNT — ABSOLUTE RULE:
+═══════════════════════════════════════════════════
+- The plan JSON has "num_days". Your itinerary MUST have EXACTLY that many days.
+- If num_days = 1, write ONLY Day 1. NEVER write Day 2.
+- If num_days = 5, write Day 1 through Day 5. NEVER write Day 6.
+- Count the days in your output before finishing. If the count doesn't match num_days, FIX IT.
+
+═══════════════════════════════════════════════════
+TRAVEL STYLE — MUST BE REFLECTED:
+═══════════════════════════════════════════════════
+- The plan JSON has "travel_style". Every recommendation must match it.
+- LUXURY: premium everything — 5-star hotels, flights/private transfers, fine dining.
+- MID-RANGE: good quality balance.
+- BUDGET: cheapest practical options.
+- If the draft recommends a bus for a luxury traveler, REPLACE it with flights/private transfer.
+
 Your output must include:
 1. Clean summary table (destination, dates, budget, visa status)
-2. Day-by-day itinerary with times, places, costs
+2. Day-by-day itinerary with times, places, costs (EXACTLY num_days days)
 3. Practical info (transport, money, language, safety)
 4. Packing checklist (based on weather)
 5. Emergency info (embassy, hospital, police numbers)
+6. Budget breakdown at the END (total by category vs user budget)
 
 If a review exists, incorporate ALL fixes.
 Make it ready to print and follow.
+
+BUDGET PLACEMENT:
+- The complete budget summary goes at the END under "💰 الميزانية" or "💰 Budget".
+- Transport section shows only transport options and prices.
+- NEVER put the full budget breakdown inside the transport/flights section.
 
 IMPORTANT: Do NOT include any confidence score, quality score, rating score,
 or any numerical evaluation in your output. Never write phrases like
@@ -399,8 +502,9 @@ def planner_node(state: GraphState) -> GraphState:
 
 def flight_node(state: GraphState) -> GraphState:
     agent = _make_research_agent(FLIGHT_SYSTEM)
+    travel_style = state['plan'].get('travel_style', 'mid-range')
     output = _invoke_agent(agent,
-        f"Find flights for: {state['question']}\nDestination: {state['plan']['destination']}\nDates: {state['plan']['travel_dates']}"
+        f"Find transport for: {state['question']}\nDestination: {state['plan']['destination']}\nDates: {state['plan']['travel_dates']}\nTravel style: {travel_style}\nIMPORTANT: Travel style is '{travel_style}' — recommend transport that matches this style."
     )
     state["flight_notes"] = _parse_notes(output)
     return state
@@ -408,8 +512,9 @@ def flight_node(state: GraphState) -> GraphState:
 
 def hotel_node(state: GraphState) -> GraphState:
     agent = _make_research_agent(HOTEL_SYSTEM)
+    travel_style = state['plan'].get('travel_style', 'mid-range')
     output = _invoke_agent(agent,
-        f"Find hotels for: {state['question']}\nDestination: {state['plan']['destination']}\nDates: {state['plan']['travel_dates']}\nDays: {state['plan']['num_days']}"
+        f"Find hotels for: {state['question']}\nDestination: {state['plan']['destination']}\nDates: {state['plan']['travel_dates']}\nDays: {state['plan']['num_days']}\nTravel style: {travel_style}"
     )
     state["hotel_notes"] = _parse_notes(output)
     return state
@@ -435,8 +540,9 @@ def weather_node(state: GraphState) -> GraphState:
 
 def activities_node(state: GraphState) -> GraphState:
     agent = _make_research_agent(ACTIVITIES_SYSTEM)
+    travel_style = state['plan'].get('travel_style', 'mid-range')
     output = _invoke_agent(agent,
-        f"Find activities and experiences for: {state['question']}\nDestination: {state['plan']['destination']}\nPreferences: {state['plan'].get('traveler_preferences', [])}"
+        f"Find activities and experiences for: {state['question']}\nDestination: {state['plan']['destination']}\nPreferences: {state['plan'].get('traveler_preferences', [])}\nTravel style: {travel_style}"
     )
     state["activities_notes"] = _parse_notes(output)
     return state
@@ -444,8 +550,9 @@ def activities_node(state: GraphState) -> GraphState:
 
 def places_node(state: GraphState) -> GraphState:
     agent = _make_research_agent(PLACES_SYSTEM)
+    travel_style = state['plan'].get('travel_style', 'mid-range')
     output = _invoke_agent(agent,
-        f"Find best places, landmarks, restaurants for: {state['question']}\nDestination: {state['plan']['destination']}\nPreferences: {state['plan'].get('traveler_preferences', [])}"
+        f"Find best places, landmarks, restaurants for: {state['question']}\nDestination: {state['plan']['destination']}\nPreferences: {state['plan'].get('traveler_preferences', [])}\nTravel style: {travel_style}"
     )
     state["places_notes"] = _parse_notes(output)
     return state
@@ -453,8 +560,10 @@ def places_node(state: GraphState) -> GraphState:
 
 def budget_node(state: GraphState) -> GraphState:
     agent = _make_research_agent(BUDGET_SYSTEM)
+    travel_style = state['plan'].get('travel_style', 'mid-range')
+    num_days = state['plan']['num_days']
     output = _invoke_agent(agent,
-        f"Calculate travel budget for: {state['question']}\nDestination: {state['plan']['destination']}\nDays: {state['plan']['num_days']}"
+        f"Calculate travel budget for: {state['question']}\nDestination: {state['plan']['destination']}\nEXACT number of days: {num_days} (calculate for {num_days} days ONLY, not more)\nTravel style: {travel_style}"
     )
     state["budget_notes"] = _parse_notes(output)
     return state
@@ -466,9 +575,17 @@ def writer_node(state: GraphState) -> GraphState:
     if state.get("review"):
         review_text = f"\n\nPrevious review to address:\n{json.dumps(state['review'], indent=2)}"
 
+    num_days = state['plan']['num_days']
+    travel_style = state['plan'].get('travel_style', 'mid-range')
+
     resp = llm.invoke([
         SystemMessage(content=WRITER_SYSTEM),
         HumanMessage(content=f"""Question: {state['question']}
+
+══════ CRITICAL CONSTRAINTS ══════
+NUMBER OF DAYS: {num_days} — write EXACTLY {num_days} day(s) in the itinerary. Not {num_days + 1}, not {num_days - 1}.
+TRAVEL STYLE: {travel_style} — ALL recommendations must match this style.
+══════════════════════════════════
 
 Plan: {json.dumps(state['plan'], indent=2)}
 Output headings: {headings}
@@ -501,11 +618,18 @@ Budget Research:
 
 
 def reviewer_node(state: GraphState) -> GraphState:
+    num_days = state['plan']['num_days']
+    travel_style = state['plan'].get('travel_style', 'mid-range')
     structured_reviewer = llm.with_structured_output(ReviewResult)
     review_obj = structured_reviewer.invoke([
         SystemMessage(content=REVIEWER_SYSTEM),
         HumanMessage(content=f"""User's original request:
 {state['question']}
+
+══════ VALIDATION TARGETS ══════
+EXPECTED NUM_DAYS: {num_days} — count the days in the draft and flag if different.
+EXPECTED TRAVEL STYLE: {travel_style} — flag any recommendation that doesn't match.
+══════════════════════════════════
 
 Draft to validate:
 {state['draft']}
@@ -526,9 +650,17 @@ Budget: {chr(10).join('- ' + n for n in state.get('budget_notes', []))}
 
 
 def finalizer_node(state: GraphState) -> GraphState:
+    num_days = state['plan']['num_days']
+    travel_style = state['plan'].get('travel_style', 'mid-range')
+
     resp = llm.invoke([
         SystemMessage(content=FINALIZER_SYSTEM),
         HumanMessage(content=f"""Question: {state['question']}
+
+══════ CRITICAL CONSTRAINTS ══════
+NUMBER OF DAYS: {num_days} — write EXACTLY {num_days} day(s). Count them before finishing.
+TRAVEL STYLE: {travel_style} — every recommendation must match this style.
+══════════════════════════════════
 
 Plan: {json.dumps(state['plan'], indent=2)}
 
