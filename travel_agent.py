@@ -24,8 +24,9 @@ from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_community.tools.tavily_search import TavilySearchResults
-from langchain.agents import create_tool_calling_agent, AgentExecutor
-from langchain_core.prompts import ChatPromptTemplate
+from langchain.agents import AgentExecutor
+from langgraph.prebuilt import create_react_agent
+
 from langgraph.graph import StateGraph, END
 
 try:
@@ -365,14 +366,12 @@ or any numerical evaluation in your output. Never write phrases like
 # 5. Helper
 # ─────────────────────────────────────────────
 
-def _make_research_agent(system_prompt: str) -> AgentExecutor:
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", system_prompt),
-        ("human", "{input}"),
-        ("placeholder", "{agent_scratchpad}"),
-    ])
-    agent = create_tool_calling_agent(llm, tools, prompt)
-    return AgentExecutor(agent=agent, tools=tools, verbose=True)
+def _make_research_agent(system_prompt: str):
+    return create_react_agent(llm, tools, messages_modifier=SystemMessage(content=system_prompt))
+
+def _invoke_agent(agent, query: str) -> str:
+    result = agent.invoke({"messages": [HumanMessage(content=query)]})
+    return result["messages"][-1].content
 
 
 def _parse_notes(text: str) -> List[str]:
@@ -398,7 +397,7 @@ def flight_node(state: GraphState) -> GraphState:
     result = agent.invoke({
         "input": f"Find flights for: {state['question']}\nDestination: {state['plan']['destination']}\nDates: {state['plan']['travel_dates']}"
     })
-    state["flight_notes"] = _parse_notes(result["output"])
+    state["flight_notes"] = _parse_notes(result)
     return state
 
 
@@ -407,7 +406,7 @@ def hotel_node(state: GraphState) -> GraphState:
     result = agent.invoke({
         "input": f"Find hotels for: {state['question']}\nDestination: {state['plan']['destination']}\nDates: {state['plan']['travel_dates']}\nDays: {state['plan']['num_days']}"
     })
-    state["hotel_notes"] = _parse_notes(result["output"])
+    state["hotel_notes"] = _parse_notes(result)
     return state
 
 
@@ -416,7 +415,7 @@ def visa_node(state: GraphState) -> GraphState:
     result = agent.invoke({
         "input": f"Find visa requirements for: {state['question']}\nDestination: {state['plan']['destination']}"
     })
-    state["visa_notes"] = _parse_notes(result["output"])
+    state["visa_notes"] = _parse_notes(result)
     return state
 
 
@@ -425,7 +424,7 @@ def weather_node(state: GraphState) -> GraphState:
     result = agent.invoke({
         "input": f"Find weather for {state['plan']['destination']} during {state['plan']['travel_dates']}"
     })
-    state["weather_notes"] = _parse_notes(result["output"])
+    state["weather_notes"] = _parse_notes(result)
     return state
 
 
@@ -434,7 +433,7 @@ def activities_node(state: GraphState) -> GraphState:
     result = agent.invoke({
         "input": f"Find activities and experiences for: {state['question']}\nDestination: {state['plan']['destination']}\nPreferences: {state['plan'].get('traveler_preferences', [])}"
     })
-    state["activities_notes"] = _parse_notes(result["output"])
+    state["activities_notes"] = _parse_notes(result)
     return state
 
 
@@ -443,7 +442,7 @@ def places_node(state: GraphState) -> GraphState:
     result = agent.invoke({
         "input": f"Find best places, landmarks, restaurants for: {state['question']}\nDestination: {state['plan']['destination']}\nPreferences: {state['plan'].get('traveler_preferences', [])}"
     })
-    state["places_notes"] = _parse_notes(result["output"])
+    state["places_notes"] = _parse_notes(result)
     return state
 
 
@@ -452,7 +451,7 @@ def budget_node(state: GraphState) -> GraphState:
     result = agent.invoke({
         "input": f"Calculate travel budget for: {state['question']}\nDestination: {state['plan']['destination']}\nDays: {state['plan']['num_days']}"
     })
-    state["budget_notes"] = _parse_notes(result["output"])
+    state["budget_notes"] = _parse_notes(result)
     return state
 
 
