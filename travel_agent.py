@@ -369,7 +369,7 @@ def _make_research_agent(system_prompt: str):
     return create_react_agent(
         llm,
         tools,
-        messages_modifier=SystemMessage(content=system_prompt),
+        state_modifier=SystemMessage(content=system_prompt),
     )
 
 
