@@ -365,17 +365,17 @@ or any numerical evaluation in your output. Never write phrases like
 # ─────────────────────────────────────────────
 
 def _make_research_agent(system_prompt: str):
-    """Create a research agent using LangGraph's create_react_agent."""
-    return create_react_agent(
-        llm,
-        tools,
-        state_modifier=SystemMessage(content=system_prompt),
-    )
+    """Return (agent, system_prompt) tuple for later invocation."""
+    return create_react_agent(llm, tools), system_prompt
 
 
-def _invoke_agent(agent, query: str) -> str:
+def _invoke_agent(agent_tuple, query: str) -> str:
     """Invoke a research agent and extract the final text response."""
-    result = agent.invoke({"messages": [HumanMessage(content=query)]})
+    agent, system_prompt = agent_tuple
+    result = agent.invoke({"messages": [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=query),
+    ]})
     return result["messages"][-1].content
 
 
