@@ -1,8 +1,12 @@
 """
-Multi-Agent Travel Planner using LangGraph
-==========================================
-11 Agents: Planner → Flight → Hotel → Visa → Weather → Activities → Places
-           → Budget → Writer → Reviewer → Finalizer
+Multi-Agent Travel Planner using LangGraph — Orchestrator Architecture
+======================================================================
+12 Agents with Central Coordinator (Hub-and-Spoke Pattern):
+  Planner → Flight → Hotel → Visa → Weather → Activities → Places
+  → Budget → ★ COORDINATOR ★ → Writer → Reviewer → Finalizer
+
+Each research agent passes context to the next (inter-agent communication).
+The Coordinator cross-validates ALL research before the Writer uses it.
 
 Requirements:
     pip install langchain langchain-openai langchain-community langgraph pydantic python-dotenv tavily-python
@@ -110,6 +114,7 @@ class GraphState(TypedDict):
     activities_notes: List[str]
     places_notes: List[str]
     budget_notes: List[str]
+    coordinator_brief: Optional[str]          # ← NEW: unified brief from Coordinator
     draft: Optional[str]
     review: Optional[Dict[str, Any]]
     iteration: int
@@ -170,53 +175,88 @@ Rules:
 - Use Tavily when the question requires current, recent info.
 - Don't use Tavily when web search is unnecessary.
 
+═══════════════════════════════════════════════════
+PRICE REALISM — EXTREMELY CRITICAL:
+═══════════════════════════════════════════════════
+- ALWAYS quote ROUND TRIP (return) prices, not one-way. State clearly "رايح وجاي" / "round trip".
+- Domestic flights within Egypt cost AT LEAST 2,000-4,000 EGP round trip economy (2024-2026 prices).
+  Examples: Cairo→Hurghada round trip = 3,000-8,000 EGP, Cairo→Sharm = 3,000-7,000 EGP,
+  Cairo→Luxor = 2,500-6,000 EGP, Cairo→Aswan = 3,000-7,000 EGP.
+- A flight ticket is NEVER 100-500 EGP. That is taxi fare, not a flight. If your search returns
+  a price under 1,000 EGP for a domestic flight, the data is WRONG — search again or use known ranges.
+- International flights from Egypt start at 8,000+ EGP minimum (nearby countries) and 15,000+ EGP for long-haul.
+- Private car/transfer Cairo→Hurghada (5-6 hours) costs 2,000-4,000 EGP one way.
+- Bus Cairo→Hurghada costs 300-600 EGP one way.
+- ALWAYS search Tavily to verify prices. If Tavily returns no clear price, use the realistic ranges above.
+- NEVER fabricate a suspiciously low price. When in doubt, quote the HIGHER end of the realistic range.
+
 OUTPUT RULES — VERY IMPORTANT:
 - ONLY include transport/flight information: airlines, routes, prices, duration, tips.
 - DO NOT calculate total trip budget or budget breakdown — that is the Budget agent's job.
 - DO NOT include hotel costs, activity costs, or food costs.
 - ONLY write about how to GET THERE and GET BACK.
-- After searching, formulate bullet-point notes with transport options, prices, and duration."""
+- After searching, formulate bullet-point notes with transport options, prices, and duration.
+- State whether each price is ONE-WAY or ROUND TRIP. Prefer quoting ROUND TRIP."""
 
 HOTEL_SYSTEM = """You are the Hotel agent. You have access to a web search tool called Tavily.
 
 CRITICAL RULES:
 1. LOCATION: Search ONLY in the EXACT destination. Never show a hotel from a different city.
 
-2. HOTEL TYPE INTELLIGENCE:
-   Hotels always include some meals. Types and budget allocation:
-   - ALL-INCLUSIVE: covers all meals + drinks + most activities.
-     Hotel can take up to 75% of total budget. Outside spending = minimal.
-   - FULL BOARD: covers breakfast + lunch + dinner.
-     Hotel can take up to 65% of total budget. Outside spending = activities + transport only.
-   - HALF BOARD: covers breakfast + dinner.
-     Hotel can take up to 55% of total budget. Lunch outside = add 10% for food.
-   - BED & BREAKFAST: covers breakfast only.
-     Hotel can take up to 50% of total budget. Lunch + dinner outside = add 20% for food.
+2. TRAVEL STYLE DETERMINES HOTEL SELECTION:
+   - LUXURY: Focus on 5-star, premium resorts. Your TOP recommendation MUST be the most luxurious option.
+     Do NOT recommend "best value" — the traveler wants premium experience, not savings.
+     If budget allows a 5-star all-inclusive at 10,000/night and there's a 4-star at 4,000/night,
+     recommend the 5-star as #1 choice.
+   - MID-RANGE: Balance quality and price. Recommend good 4-star hotels.
+   - BUDGET: Focus on affordable, clean, well-rated budget hotels.
 
-3. BUDGET: Max per night = total budget × hotel_percentage / number of nights
-   - Always calculate max per night based on hotel type above.
-   - NEVER recommend a hotel above this calculated maximum.
-   - Always mention meal plan type for each hotel.
+3. HOTEL TYPE INTELLIGENCE (meal plans):
+   - ALL-INCLUSIVE: covers all meals + drinks + most activities. Outside spending = minimal.
+   - FULL BOARD: covers breakfast + lunch + dinner. Outside spending = activities + transport only.
+   - HALF BOARD: covers breakfast + dinner. Lunch outside needed.
+   - BED & BREAKFAST: covers breakfast only. Lunch + dinner outside needed.
 
-4. Always provide EXACTLY 3 options at DIFFERENT price points:
-   - Option 1: best value (lower price, good quality)
-   - Option 2: mid-range
-   - Option 3: premium (if within budget)
-   - ALL three must stay within the budget constraint.
+4. REALISTIC PRICING FOR SHORT TRIPS:
+   - For 1-2 day trips: use ACTUAL hotel prices per night, not percentage-based allocation.
+     A realistic luxury hotel in Egypt costs 3,000-15,000 EGP/night, NOT 45,000 EGP/night.
+   - For 3+ day trips: max per night = total budget × hotel_percentage / number of nights
+     Hotel percentages: All-Inclusive 75%, Full Board 65%, Half Board 55%, B&B 50%
+   - NEVER recommend a per-night price that exceeds what real hotels actually charge.
+   - Search Tavily to verify ACTUAL prices, don't just calculate from percentages.
+
+5. Always provide EXACTLY 3 options ORDERED FROM MOST EXPENSIVE TO CHEAPEST:
+   - LUXURY style: Option 1 = most luxurious & expensive, Option 2 = premium, Option 3 = upscale
+     ALL must be luxury-tier. The FIRST option is the TOP recommendation.
+   - MID-RANGE style: Option 1 = premium, Option 2 = mid-range, Option 3 = best value
+   - BUDGET style: Option 1 = mid-range, Option 2 = budget-mid, Option 3 = cheapest good
+   - ALL three must stay within what the budget allows for hotels.
+   - ORDERING IS CRITICAL: Option 1 is ALWAYS the most expensive. NEVER put the cheapest first.
 
 For each hotel:
-  * Exact name (verified in destination)
+  * Exact name (verified in destination via Tavily search)
   * Star rating
-  * Price per night in preferred currency
+  * Price per night in preferred currency (VERIFIED real price, not calculated)
   * What is INCLUDED (all-inclusive / half-board / room only / breakfast)
   * Location within destination
   * What makes it special (beach access, pool, spa, etc.)
   * Rating if available
   * Best for (families, couples, etc.)
 
-- Add RECOMMENDATION: best choice for this traveler considering budget AND what is included.
-- Use Tavily to search and verify real hotels in the destination.
-- Show budget calculation before the 3 options."""
+6. RECOMMENDATION LOGIC — MAXIMIZE QUALITY WITHIN BUDGET:
+   - LUXURY travelers: recommend the MOST EXPENSIVE hotel the budget allows.
+     If budget is 100,000 EGP for 2 nights and the most luxurious hotel costs 20,000/night (40,000 total),
+     recommend THAT hotel — NOT a cheaper 15,000/night hotel. The traveler WANTS premium.
+     Reason: "best luxury experience". NEVER "best value" for luxury travelers.
+   - MID-RANGE travelers: recommend best quality/price balance.
+   - BUDGET travelers: recommend best value for money.
+   - NEVER recommend a cheaper hotel to a luxury traveler "because it balances price and service".
+   - ALWAYS pick the most expensive option that fits within the total budget (not just hotel allocation).
+
+- Use Tavily to search and verify real hotels and their ACTUAL prices in the destination.
+- Show budget calculation before the 3 options.
+- IMPORTANT: The hotel you recommend here will appear in ALL sections of the plan.
+  Make sure your recommendation matches what a traveler of this style actually wants."""
 
 VISA_SYSTEM = """You are the Visa agent. You have access to a web search tool called Tavily.
 
@@ -277,41 +317,70 @@ BUDGET_SYSTEM = """You are the Budget agent. You have access to a web search too
 BUDGET IS A HARD MAXIMUM — MOST IMPORTANT RULE:
 - The total budget stated by the user is the ABSOLUTE MAXIMUM they want to spend.
 - NEVER recommend a plan that costs more than the budget.
-- Always leave a small buffer (10-15%) under the budget for unexpected expenses.
 
 CRITICAL — USE EXACT NUM_DAYS:
 - The number of days is provided in the query. Use EXACTLY that number.
 - If the user says 1 day, calculate budget for 1 day ONLY.
-- If the user says 3 days, calculate budget for 3 days ONLY.
 - NEVER calculate for more or fewer days than specified.
 
-BUDGET MATH — always calculate:
-1. Per-day budget = total budget / number of days (use EXACT num_days from query)
-2. Per-person-per-day = per-day budget / number of travelers
+═══════════════════════════════════════════════════
+SHORT TRIP INTELLIGENCE (1-3 days) — VERY IMPORTANT:
+═══════════════════════════════════════════════════
+For short trips (1-3 days), percentage-based allocation produces UNREALISTIC numbers.
+Example: 60,000 EGP budget × 75% = 45,000 for hotel. But NO hotel costs 45,000/night!
 
-TRAVEL STYLE IMPACT:
-- LUXURY: allocate more to premium experiences, 5-star hotels, private transport.
-- MID-RANGE: balanced allocation.
-- BUDGET: maximize savings, cheapest options.
+For 1-3 day trips, use REAL PRICES instead of percentages:
+1. Search Tavily for ACTUAL hotel prices per night at the destination.
+2. Search for ACTUAL flight/transport costs.
+3. Search for ACTUAL activity costs.
+4. Add them up. The total should be WELL UNDER the budget for short luxury trips.
+5. Report the ACTUAL remaining budget — do NOT force the total to equal the budget.
+
+Example for 1-day luxury trip to Sahl Hasheesh, budget 60,000 EGP:
+- Hotel (1 night, 5-star all-inclusive): ~8,000-15,000 EGP (real price)
+- Flights (round trip): ~4,000-5,000 EGP
+- Activities: ~3,000-5,000 EGP
+- Transport (airport transfer): ~800-1,500 EGP
+- Misc: ~2,000 EGP
+- TOTAL: ~18,000-28,000 EGP → Remaining: 32,000-42,000 EGP
+- This is CORRECT — a 1-day trip simply doesn't cost 60,000 EGP.
+
+═══════════════════════════════════════════════════
+LONGER TRIPS (4+ days) — use percentage allocation:
+═══════════════════════════════════════════════════
+PRIORITY ORDER (MUST follow this order):
+  1st priority: HOTEL (الفندق أولاً — gets the biggest share)
+  2nd priority: TRANSPORT (النقل ثانياً — flights/transfers are expensive)
+  3rd priority: ACTIVITIES (الأنشطة ثالثاً — what's left after hotel + transport)
+  4th: Miscellaneous
 
 SMART ALLOCATION based on hotel meal plan:
-- ALL-INCLUSIVE: Hotel 75% | Outside activities 15% | Transport 5% | Misc 5%
-  (No food budget needed — all included)
-- FULL BOARD: Hotel 65% | Outside activities 20% | Transport 10% | Misc 5%
-  (No food budget needed — all meals included)
-- HALF BOARD: Hotel 55% | Lunch outside 10% | Activities 20% | Transport 10% | Misc 5%
-  (Only lunch needs budget)
-- BED & BREAKFAST: Hotel 50% | Lunch+Dinner 20% | Activities 15% | Transport 10% | Misc 5%
+- ALL-INCLUSIVE: Hotel 65% | Transport 15% | Activities 15% | Misc 5%
+- FULL BOARD: Hotel 55% | Transport 20% | Activities 15% | Food 5% | Misc 5%
+- HALF BOARD: Hotel 50% | Transport 20% | Activities 15% | Food 10% | Misc 5%
+- BED & BREAKFAST: Hotel 45% | Transport 20% | Activities 15% | Food 15% | Misc 5%
+
+BUDGET COMPARISON — MATH MUST BE CORRECT:
+- Add up ALL category costs to get TOTAL.
+- Remaining = User's budget - TOTAL.
+- If remaining > 0: say "الميزانية المتبقية: X" (remaining budget: X).
+- If remaining = 0: say "تم استخدام الميزانية بالكامل".
+- If remaining < 0: CRITICAL ERROR — reduce costs to stay under budget.
+- NEVER say "تم استهلاك الميزانية بالكامل" if the total is LESS than the budget.
+
+CROSS-REFERENCE WITH OTHER AGENTS:
+- You will receive hotel_notes and flight_notes from other agents.
+- Use the ACTUAL hotel and flight prices from those notes in your budget.
+- The hotel price in your budget MUST match the hotel recommended by the Hotel agent.
+- The transport cost MUST match the flight/transport prices from the Flight agent.
+- DO NOT invent different prices — use the researched prices.
 
 RULES:
-- Total must NEVER exceed the budget. Leave 5% buffer.
+- Total must NEVER exceed the budget.
 - Never add food budget if hotel is all-inclusive or full board.
 - Show final breakdown table clearly.
-- YOUR OUTPUT IS THE COMPLETE BUDGET SECTION — include total costs by category,
-  daily breakdown, comparison to user's budget, and remaining buffer.
-
 - Use preferred currency for ALL prices.
-- Use Tavily for current prices.
+- Use Tavily for current prices to verify.
 - After searching, formulate specific bullet-point notes with the budget math shown clearly."""
 
 WRITER_SYSTEM = """You are the Writer agent for a travel planning system.
@@ -350,15 +419,20 @@ ALWAYS do these:
 - Include ratings when available (from research notes)
 - Include distances and travel times between places
 - Packing list based on actual weather research
-- Emergency contacts: nearest hospital, police, embassy
+- Emergency contacts: nearest hospital, police number
+  IMPORTANT: Do NOT include embassy info if traveler is traveling WITHIN their own country.
+  An Egyptian traveling inside Egypt does NOT need the Egyptian embassy!
+  Only include embassy info for INTERNATIONAL travel.
 
-FOR HOTELS — present the 3 hotels ONCE ONLY in a comparison table. Never mention hotels again anywhere else:
+FOR HOTELS — present the 3 hotels ONCE ONLY in a comparison table, ORDERED FROM MOST EXPENSIVE TO CHEAPEST:
 | الفندق | النجوم | السعر/ليلة | المميزات | التقييم |
 |--------|--------|------------|----------|---------|
-| فندق 1 | ⭐⭐⭐⭐⭐ | X ج.م | كذا | 9.2 |
+| فندق 1 (الأغلى) | ⭐⭐⭐⭐⭐ | X ج.م | كذا | 9.2 |
 | فندق 2 | ⭐⭐⭐⭐⭐ | X ج.م | كذا | 8.8 |
-| فندق 3 | ⭐⭐⭐⭐ | X ج.م | كذا | 8.5 |
-Then write: "🏆 توصية الـ AI: [اسم الفندق] — لأن [السبب]"
+| فندق 3 (الأرخص) | ⭐⭐⭐⭐ | X ج.م | كذا | 8.5 |
+CRITICAL: Option 1 is ALWAYS the most expensive. The table goes from highest price to lowest.
+Then write: "🏆 توصية الـ AI: [اسم الفندق الأغلى] — لأن [السبب]"
+For LUXURY travelers, the AI recommendation MUST be the MOST EXPENSIVE hotel (Option 1).
 IMPORTANT: Do NOT repeat or mention hotels anywhere else in the plan.
 
 FOR FLIGHTS/TRANSPORT — present options in a table ONCE ONLY (NO links):
@@ -370,12 +444,30 @@ IMPORTANT: Do NOT repeat transport options anywhere else.
 ═══════════════════════════════════════════════════
 BUDGET SECTION — PLACEMENT RULES:
 ═══════════════════════════════════════════════════
-- Put the FULL budget breakdown (total costs, category breakdown, daily breakdown) at the END of the plan
-  in a clearly labeled section: "💰 الميزانية" or "💰 Budget".
+- Put the FULL budget breakdown at the END of the plan under "💰 الميزانية" or "💰 Budget".
 - DO NOT put budget totals or breakdowns inside the transport/flights section.
 - The transport section should ONLY show transport option prices, NOT total trip budget.
 - Budget section should show: transport cost + hotel cost + activities cost + food cost = TOTAL
   and compare to user's budget.
+
+═══════════════════════════════════════════════════
+BUDGET MATH — MUST BE CORRECT:
+═══════════════════════════════════════════════════
+- Add up ALL costs EXACTLY. Use the ACTUAL numbers from the budget research notes.
+- Remaining budget = User's total budget - Your calculated total.
+- If remaining > 0: write "الميزانية المتبقية: [remaining amount]". NEVER say "تم استهلاك الميزانية".
+- If remaining = 0 exactly: write "تم استخدام الميزانية بالكامل".
+- If total > budget: ERROR — reduce costs.
+- For SHORT TRIPS (1-3 days): the total will likely be MUCH LESS than the budget. This is NORMAL.
+  A 1-day trip with 60,000 budget may only cost 20,000-30,000. Report the real remaining amount.
+
+═══════════════════════════════════════════════════
+CONSISTENCY — CRITICAL:
+═══════════════════════════════════════════════════
+- The hotel in your budget table MUST be the SAME hotel shown in the hotels section.
+- The transport cost MUST match the flight/transport prices shown in the transport section.
+- Do NOT show one hotel in the hotels table and a different hotel in the budget notes.
+- The AI recommendation hotel = the hotel used for budget calculation = the hotel in the itinerary.
 
 Use ALL research notes: flights/transport, hotels, visa, weather, activities, places, budget.
 Include quick-reference summary table at top.
@@ -413,12 +505,43 @@ You validate the LOGIC and COMPLETENESS of the travel plan.
 ## Safety validation
 - Travel warnings? Insurance? Emergency contacts?
 
+## Hotel consistency validation
+- The recommended hotel MUST be the same in the hotels section and the budget section.
+- If different hotels are mentioned in different sections, flag: -15 points.
+- For luxury travelers, the recommended hotel should be the MOST luxurious, not "best value".
+
+## Budget math validation
+- Add up the budget categories. Total must equal what's reported.
+- Remaining budget = user budget - total. If remaining > 0 but plan says "fully consumed", flag: -15 points.
+- For short trips (1-3 days), if hotel cost seems unrealistically high (e.g., 45,000/night), flag: -15 points.
+- Transport cost in budget must match actual flight prices from research.
+- Budget priority must be: Hotel first (biggest share) → Transport second → Activities third.
+
+## Transport price realism validation
+- Domestic flights in Egypt: minimum 2,000-4,000 EGP round trip. NEVER under 1,000 EGP.
+- If flight price is under 1,000 EGP (e.g., 185 EGP), flag as UNREALISTIC: -20 points.
+- Private car transfers 5-6 hours: 2,000-4,000 EGP one way. Under 500 EGP is UNREALISTIC.
+- All transport prices should be ROUND TRIP unless clearly stated as one-way.
+
+## Hotel ordering validation
+- Hotels MUST be ordered from most expensive to cheapest (Option 1 = most expensive).
+- If cheapest hotel is listed first, flag: -10 points.
+- For LUXURY travelers: the recommended hotel MUST be the most expensive option. Flag if not: -15 points.
+
+## Domestic travel validation
+- If traveler is traveling within their own country, there should be NO embassy info. Flag if present: -10 points.
+
 ## Scoring: Start at 100, deduct:
 - Day count mismatch: -25 | Travel style mismatch: -15
 - Budget exceeded: -20 | Missing visa: -15 | Unrealistic schedule: -10
 - No transit info: -10 | No airport transfer: -5 | No safety info: -5
 - Weather mismatch: -5 | Each hallucination risk: -5
-- Budget in wrong section: -10
+- Budget in wrong section: -10 | Hotel inconsistency: -15
+- Wrong remaining budget: -15 | Embassy for domestic travel: -10
+- Unrealistic hotel price: -15 | Unrealistic transport price: -20
+- Hotels ordered wrong (cheapest first): -10
+- Luxury traveler but cheapest hotel recommended: -15
+- Budget priorities wrong (activities before transport): -10
 
 Return JSON matching the ReviewResult schema."""
 
@@ -447,7 +570,10 @@ Your output must include:
 2. Day-by-day itinerary with times, places, costs (EXACTLY num_days days)
 3. Practical info (transport, money, language, safety)
 4. Packing checklist (based on weather)
-5. Emergency info (embassy, hospital, police numbers)
+5. Emergency info (hospital, police numbers)
+   IMPORTANT: Do NOT include embassy info for DOMESTIC travel.
+   If the traveler is traveling within their own country (e.g., Egyptian in Egypt), NO embassy needed.
+   Only include embassy for international travel.
 6. Budget breakdown at the END (total by category vs user budget)
 
 If a review exists, incorporate ALL fixes.
@@ -458,9 +584,154 @@ BUDGET PLACEMENT:
 - Transport section shows only transport options and prices.
 - NEVER put the full budget breakdown inside the transport/flights section.
 
+BUDGET MATH — MUST BE CORRECT:
+- Add costs exactly. Remaining = budget - total.
+- If remaining > 0: write "الميزانية المتبقية: [amount]". NEVER say "تم استهلاك الميزانية".
+- For short trips (1-3 days), total will be MUCH less than budget. This is normal and correct.
+- The hotel in budget MUST match the recommended hotel in the hotels section.
+- Transport cost MUST match the flight prices shown.
+
+CONSISTENCY CHECK BEFORE FINALIZING:
+- Hotel name in hotels table = hotel in budget = hotel in itinerary (all same)
+- Transport cost in transport table = transport in budget (same numbers)
+- Total cost in budget < user's budget (with remaining amount shown)
+- No embassy info for domestic travel
+
 IMPORTANT: Do NOT include any confidence score, quality score, rating score,
 or any numerical evaluation in your output. Never write phrases like
 "درجة الثقة", "Confidence Score", "Quality Score", or any score number."""
+
+
+COORDINATOR_SYSTEM = """You are the Orchestrator/Coordinator agent — the CENTRAL HUB of the travel planning system.
+You receive ALL research from every agent and your job is to:
+1. CROSS-VALIDATE all data for consistency
+2. RESOLVE conflicts between agents
+3. Produce a single UNIFIED BRIEF that the Writer will use
+
+═══════════════════════════════════════════════════
+STEP 1 — HOTEL VALIDATION (ORDER + MAXIMIZE QUALITY)
+═══════════════════════════════════════════════════
+- Extract ALL hotel options from hotel_notes.
+- ORDERING: Hotels MUST be listed from MOST EXPENSIVE to CHEAPEST. If they aren't, REORDER them.
+- Verify it matches the travel style:
+  • LUXURY → must be a 5-star / premium resort. If hotel agent recommended a budget option, FLAG IT.
+  • MID-RANGE → should be 4-star. Flag if 2-star or 5-star luxury.
+  • BUDGET → should be affordable. Flag if it's a luxury resort.
+- MAXIMIZE QUALITY: For LUXURY travelers, the RECOMMENDED hotel must be the MOST EXPENSIVE
+  option that the budget allows. If budget is 100,000 EGP for 2 nights and there's a 20,000/night
+  hotel (40,000 total), recommend THAT one — NOT a cheaper 15,000/night hotel.
+  Calculate: can the budget cover (most_expensive_hotel × nights) + transport + activities?
+  If YES → recommend the most expensive hotel.
+- Record: HOTEL_NAME, HOTEL_PRICE_PER_NIGHT, HOTEL_TOTAL (price × nights), HOTEL_MEAL_PLAN
+
+═══════════════════════════════════════════════════
+STEP 2 — TRANSPORT VALIDATION (PRICE REALISM CRITICAL)
+═══════════════════════════════════════════════════
+- Extract transport option and cost from flight_notes.
+- Verify it matches travel style:
+  • LUXURY → must be flights or private transfer, NEVER public bus.
+  • BUDGET → cheapest is fine.
+- PRICE REALITY CHECK:
+  • Domestic flights in Egypt: minimum 2,000-4,000 EGP round trip. NEVER under 1,000 EGP.
+  • If transport cost seems unrealistically low (e.g., 185 EGP for a flight), FLAG IT and
+    replace with realistic price range (e.g., Cairo→Hurghada round trip = 4,000-8,000 EGP).
+  • Private car transfers: 2,000-4,000 EGP for 5-6 hour routes.
+  • Always use ROUND TRIP prices in the budget.
+- Record: TRANSPORT_TYPE, TRANSPORT_COST (round trip)
+
+═══════════════════════════════════════════════════
+STEP 3 — BUDGET CROSS-CHECK (MOST CRITICAL)
+═══════════════════════════════════════════════════
+- Take HOTEL_TOTAL from Step 1 and TRANSPORT_COST from Step 2.
+- Compare with what the Budget agent calculated.
+- If Budget agent used DIFFERENT hotel price → OVERRIDE with the real hotel price.
+- If Budget agent used DIFFERENT transport cost → OVERRIDE with the real transport cost.
+- PRIORITY ORDER for budget allocation:
+  1st: HOTEL (الفندق) — gets the biggest share, maximize quality
+  2nd: TRANSPORT (النقل) — flights/transfers are non-negotiable costs
+  3rd: ACTIVITIES (الأنشطة) — what remains after hotel + transport
+- Recalculate: TOTAL = hotel + transport + activities + food + misc
+- REMAINING = user_budget - TOTAL
+- If REMAINING > 0: mark as "under budget" with remaining amount.
+- If REMAINING < 0: FLAG as over-budget and suggest cuts (cut activities first, NOT hotel).
+- NEVER say "budget fully consumed" if remaining > 0.
+- For SHORT TRIPS (1-3 days): total will naturally be MUCH less than budget. This is CORRECT.
+
+═══════════════════════════════════════════════════
+STEP 4 — DOMESTIC TRAVEL CHECK
+═══════════════════════════════════════════════════
+- If the traveler's nationality matches the destination country → mark DOMESTIC_TRAVEL = true
+- If DOMESTIC_TRAVEL: no visa needed, NO embassy info, no passport requirements.
+- Flag any research that incorrectly includes embassy/visa for domestic travel.
+
+═══════════════════════════════════════════════════
+STEP 5 — ACTIVITIES & PLACES VALIDATION
+═══════════════════════════════════════════════════
+- Verify all activities and places are in the CORRECT destination (not a different city).
+- Check activities match travel style (no street food tours for luxury travelers).
+- Remove duplicates between activities_notes and places_notes.
+- Verify activity costs are reasonable.
+
+═══════════════════════════════════════════════════
+STEP 6 — WEATHER-ACTIVITY ALIGNMENT
+═══════════════════════════════════════════════════
+- Check weather_notes against activities_notes.
+- Flag outdoor activities during extreme weather.
+- Suggest alternatives if weather is bad for planned activities.
+
+═══════════════════════════════════════════════════
+OUTPUT FORMAT — UNIFIED BRIEF
+═══════════════════════════════════════════════════
+Produce a structured brief with these exact sections:
+
+## 🎯 VALIDATED DATA
+- Destination: [name]
+- Dates: [dates]
+- Duration: [X] days
+- Travel Style: [luxury/mid-range/budget]
+- Domestic Travel: [yes/no]
+
+## ✈️ CONFIRMED TRANSPORT
+- Type: [flight/bus/private transfer]
+- Cost: [amount in currency]
+- Details: [route, duration]
+
+## 🏨 CONFIRMED HOTEL
+- Name: [exact hotel name]
+- Stars: [rating]
+- Price/Night: [amount]
+- Total ([X] nights): [amount]
+- Meal Plan: [all-inclusive/half-board/etc.]
+- What's Included: [details]
+
+## 🎯 CONFIRMED ACTIVITIES
+[List validated activities with costs]
+
+## 📍 CONFIRMED PLACES
+[List validated places]
+
+## 💰 VALIDATED BUDGET
+| Category | Cost |
+|----------|------|
+| Transport | X |
+| Hotel ([X] nights) | X |
+| Activities | X |
+| Food (if needed) | X |
+| Miscellaneous | X |
+| **TOTAL** | **X** |
+| **User Budget** | **X** |
+| **Remaining** | **X** |
+
+## ⚠️ CONFLICTS RESOLVED
+[List any conflicts found and how they were resolved]
+
+## 🛂 VISA STATUS
+[Visa info or "domestic travel — no visa needed"]
+
+## 🌤️ WEATHER SUMMARY
+[Key weather points and packing advice]
+
+This brief is the SINGLE SOURCE OF TRUTH for the Writer and Finalizer."""
 
 
 # ─────────────────────────────────────────────
@@ -513,8 +784,16 @@ def flight_node(state: GraphState) -> GraphState:
 def hotel_node(state: GraphState) -> GraphState:
     agent = _make_research_agent(HOTEL_SYSTEM)
     travel_style = state['plan'].get('travel_style', 'mid-range')
+    num_days = state['plan']['num_days']
+
+    # ← ORCHESTRATOR PATTERN: Hotel receives flight context for transport-aware recommendations
+    flight_context = ""
+    if state.get('flight_notes'):
+        flight_summary = chr(10).join('- ' + n for n in state['flight_notes'][:5])
+        flight_context = f"\n\n══ CONTEXT FROM TRANSPORT AGENT ══\nThe traveler will arrive via:\n{flight_summary}\nConsider hotel proximity to arrival point (airport/bus station).\n══════════════════════════════════\n"
+
     output = _invoke_agent(agent,
-        f"Find hotels for: {state['question']}\nDestination: {state['plan']['destination']}\nDates: {state['plan']['travel_dates']}\nDays: {state['plan']['num_days']}\nTravel style: {travel_style}"
+        f"Find hotels for: {state['question']}\nDestination: {state['plan']['destination']}\nDates: {state['plan']['travel_dates']}\nNumber of nights: {num_days}\nTravel style: {travel_style}\n{flight_context}\nIMPORTANT: This is a {num_days}-day trip. Search for REAL hotel prices per night. For luxury style, recommend the MOST LUXURIOUS option as your top pick, not 'best value'."
     )
     state["hotel_notes"] = _parse_notes(output)
     return state
@@ -541,8 +820,20 @@ def weather_node(state: GraphState) -> GraphState:
 def activities_node(state: GraphState) -> GraphState:
     agent = _make_research_agent(ACTIVITIES_SYSTEM)
     travel_style = state['plan'].get('travel_style', 'mid-range')
+
+    # ← ORCHESTRATOR PATTERN: Activities receives hotel + weather context
+    hotel_context = ""
+    if state.get('hotel_notes'):
+        hotel_summary = chr(10).join('- ' + n for n in state['hotel_notes'][:5])
+        hotel_context = f"\n\n══ CONTEXT FROM HOTEL AGENT ══\nTraveler's hotel info:\n{hotel_summary}\nRecommend activities near the hotel area. If hotel is all-inclusive, focus on unique outside experiences.\n══════════════════════════════\n"
+
+    weather_context = ""
+    if state.get('weather_notes'):
+        weather_summary = chr(10).join('- ' + n for n in state['weather_notes'][:5])
+        weather_context = f"\n\n══ CONTEXT FROM WEATHER AGENT ══\nWeather conditions:\n{weather_summary}\nOnly recommend outdoor activities if weather permits. Suggest indoor alternatives for bad weather.\n══════════════════════════════════\n"
+
     output = _invoke_agent(agent,
-        f"Find activities and experiences for: {state['question']}\nDestination: {state['plan']['destination']}\nPreferences: {state['plan'].get('traveler_preferences', [])}\nTravel style: {travel_style}"
+        f"Find activities and experiences for: {state['question']}\nDestination: {state['plan']['destination']}\nPreferences: {state['plan'].get('traveler_preferences', [])}\nTravel style: {travel_style}{hotel_context}{weather_context}"
     )
     state["activities_notes"] = _parse_notes(output)
     return state
@@ -551,8 +842,19 @@ def activities_node(state: GraphState) -> GraphState:
 def places_node(state: GraphState) -> GraphState:
     agent = _make_research_agent(PLACES_SYSTEM)
     travel_style = state['plan'].get('travel_style', 'mid-range')
+
+    # ← ORCHESTRATOR PATTERN: Places receives hotel + activities context to avoid duplicates
+    context_parts = ""
+    if state.get('hotel_notes'):
+        hotel_loc = chr(10).join('- ' + n for n in state['hotel_notes'][:3])
+        context_parts += f"\n\n══ CONTEXT FROM HOTEL AGENT ══\nHotel location:\n{hotel_loc}\nRecommend places near the hotel. Include restaurants close to the hotel.\n══════════════════════════════\n"
+
+    if state.get('activities_notes'):
+        activities_summary = chr(10).join('- ' + n for n in state['activities_notes'][:5])
+        context_parts += f"\n\n══ CONTEXT FROM ACTIVITIES AGENT ══\nActivities already recommended:\n{activities_summary}\nDo NOT duplicate these. Find DIFFERENT places, landmarks, and restaurants.\n══════════════════════════════════════\n"
+
     output = _invoke_agent(agent,
-        f"Find best places, landmarks, restaurants for: {state['question']}\nDestination: {state['plan']['destination']}\nPreferences: {state['plan'].get('traveler_preferences', [])}\nTravel style: {travel_style}"
+        f"Find best places, landmarks, restaurants for: {state['question']}\nDestination: {state['plan']['destination']}\nPreferences: {state['plan'].get('traveler_preferences', [])}\nTravel style: {travel_style}{context_parts}"
     )
     state["places_notes"] = _parse_notes(output)
     return state
@@ -562,10 +864,82 @@ def budget_node(state: GraphState) -> GraphState:
     agent = _make_research_agent(BUDGET_SYSTEM)
     travel_style = state['plan'].get('travel_style', 'mid-range')
     num_days = state['plan']['num_days']
+
+    # Pass hotel and flight research so budget uses ACTUAL prices
+    hotel_research = chr(10).join('- ' + n for n in state.get('hotel_notes', []))
+    flight_research = chr(10).join('- ' + n for n in state.get('flight_notes', []))
+
     output = _invoke_agent(agent,
-        f"Calculate travel budget for: {state['question']}\nDestination: {state['plan']['destination']}\nEXACT number of days: {num_days} (calculate for {num_days} days ONLY, not more)\nTravel style: {travel_style}"
+        f"Calculate travel budget for: {state['question']}\nDestination: {state['plan']['destination']}\nEXACT number of days: {num_days} (calculate for {num_days} days ONLY, not more)\nTravel style: {travel_style}\n\n"
+        f"══════ ACTUAL PRICES FROM OTHER AGENTS (use these, don't invent new ones) ══════\n"
+        f"Hotel research (use the recommended hotel's actual price):\n{hotel_research}\n\n"
+        f"Flight/Transport research (use these actual transport costs):\n{flight_research}\n"
+        f"══════════════════════════════════════════════════════════════════════════════════\n\n"
+        f"IMPORTANT: Use the REAL prices above. The hotel cost in your budget MUST match the recommended hotel price. The transport cost MUST match the flight/transport prices researched."
     )
     state["budget_notes"] = _parse_notes(output)
+    return state
+
+
+def coordinator_node(state: GraphState) -> GraphState:
+    """Central Orchestrator — cross-validates ALL research and produces unified brief."""
+    num_days = state['plan']['num_days']
+    travel_style = state['plan'].get('travel_style', 'mid-range')
+    destination = state['plan']['destination']
+
+    # Gather ALL research notes
+    flight_research = chr(10).join('- ' + n for n in state.get('flight_notes', []))
+    hotel_research = chr(10).join('- ' + n for n in state.get('hotel_notes', []))
+    visa_research = chr(10).join('- ' + n for n in state.get('visa_notes', []))
+    weather_research = chr(10).join('- ' + n for n in state.get('weather_notes', []))
+    activities_research = chr(10).join('- ' + n for n in state.get('activities_notes', []))
+    places_research = chr(10).join('- ' + n for n in state.get('places_notes', []))
+    budget_research = chr(10).join('- ' + n for n in state.get('budget_notes', []))
+
+    resp = llm.invoke([
+        SystemMessage(content=COORDINATOR_SYSTEM),
+        HumanMessage(content=f"""User's original request:
+{state['question']}
+
+══════ PLAN METADATA ══════
+Destination: {destination}
+Dates: {state['plan']['travel_dates']}
+Duration: {num_days} days
+Travel Style: {travel_style}
+Traveler Preferences: {state['plan'].get('traveler_preferences', [])}
+Key Risks: {state['plan'].get('key_risks', [])}
+════════════════════════════
+
+══════ FLIGHT/TRANSPORT AGENT RESEARCH ══════
+{flight_research or '(no data)'}
+
+══════ HOTEL AGENT RESEARCH ══════
+{hotel_research or '(no data)'}
+
+══════ VISA AGENT RESEARCH ══════
+{visa_research or '(no data)'}
+
+══════ WEATHER AGENT RESEARCH ══════
+{weather_research or '(no data)'}
+
+══════ ACTIVITIES AGENT RESEARCH ══════
+{activities_research or '(no data)'}
+
+══════ PLACES AGENT RESEARCH ══════
+{places_research or '(no data)'}
+
+══════ BUDGET AGENT RESEARCH ══════
+{budget_research or '(no data)'}
+
+Now cross-validate ALL of the above data, resolve any conflicts,
+and produce the UNIFIED BRIEF following your output format.
+Make sure hotel price in budget matches actual hotel price.
+Make sure transport cost in budget matches actual transport cost.
+Make sure total never exceeds user's budget.
+If this is domestic travel, remove any embassy/visa info."""),
+    ]).content
+
+    state["coordinator_brief"] = resp
     return state
 
 
@@ -578,6 +952,9 @@ def writer_node(state: GraphState) -> GraphState:
     num_days = state['plan']['num_days']
     travel_style = state['plan'].get('travel_style', 'mid-range')
 
+    # ← ORCHESTRATOR PATTERN: Writer uses coordinator_brief as PRIMARY source
+    coordinator_brief = state.get('coordinator_brief', '')
+
     resp = llm.invoke([
         SystemMessage(content=WRITER_SYSTEM),
         HumanMessage(content=f"""Question: {state['question']}
@@ -589,6 +966,16 @@ TRAVEL STYLE: {travel_style} — ALL recommendations must match this style.
 
 Plan: {json.dumps(state['plan'], indent=2)}
 Output headings: {headings}
+
+╔══════════════════════════════════════════════════════════════╗
+║  COORDINATOR'S VALIDATED BRIEF — USE THIS AS PRIMARY SOURCE ║
+║  All data below has been cross-validated for consistency.    ║
+║  Hotel prices, transport costs, and budget are VERIFIED.     ║
+╚══════════════════════════════════════════════════════════════╝
+
+{coordinator_brief}
+
+═══ RAW RESEARCH NOTES (for additional detail only) ═══
 
 Flight Research:
 {chr(10).join('- ' + n for n in state.get('flight_notes', []))}
@@ -653,6 +1040,9 @@ def finalizer_node(state: GraphState) -> GraphState:
     num_days = state['plan']['num_days']
     travel_style = state['plan'].get('travel_style', 'mid-range')
 
+    # ← ORCHESTRATOR PATTERN: Finalizer uses coordinator_brief as PRIMARY source
+    coordinator_brief = state.get('coordinator_brief', '')
+
     resp = llm.invoke([
         SystemMessage(content=FINALIZER_SYSTEM),
         HumanMessage(content=f"""Question: {state['question']}
@@ -664,6 +1054,15 @@ TRAVEL STYLE: {travel_style} — every recommendation must match this style.
 
 Plan: {json.dumps(state['plan'], indent=2)}
 
+╔══════════════════════════════════════════════════════════════╗
+║  COORDINATOR'S VALIDATED BRIEF — USE THIS AS PRIMARY SOURCE ║
+║  All data below has been cross-validated for consistency.    ║
+║  Hotel prices, transport costs, and budget are VERIFIED.     ║
+╚══════════════════════════════════════════════════════════════╝
+
+{coordinator_brief}
+
+═══ RAW RESEARCH (for additional detail only) ═══
 Flights: {chr(10).join('- ' + n for n in state.get('flight_notes', []))}
 Hotels: {chr(10).join('- ' + n for n in state.get('hotel_notes', []))}
 Visa: {chr(10).join('- ' + n for n in state.get('visa_notes', []))}
@@ -718,20 +1117,23 @@ workflow.add_node("weather", weather_node)
 workflow.add_node("activities", activities_node)
 workflow.add_node("places", places_node)
 workflow.add_node("budget", budget_node)
+workflow.add_node("coordinator", coordinator_node)    # ← NEW: Central Orchestrator
 workflow.add_node("writer", writer_node)
 workflow.add_node("reviewer", reviewer_node)
 workflow.add_node("finalizer", finalizer_node)
 
 workflow.set_entry_point("planner")
 
+# ── Hub-and-Spoke: Planner → Research Agents → Coordinator → Writer ──
 workflow.add_edge("planner", "flight")
-workflow.add_edge("flight", "hotel")
+workflow.add_edge("flight", "hotel")          # hotel sees flight context
 workflow.add_edge("hotel", "visa")
 workflow.add_edge("visa", "weather")
-workflow.add_edge("weather", "activities")
-workflow.add_edge("activities", "places")
-workflow.add_edge("places", "budget")
-workflow.add_edge("budget", "writer")
+workflow.add_edge("weather", "activities")    # activities see hotel + weather context
+workflow.add_edge("activities", "places")     # places see hotel + activities context
+workflow.add_edge("places", "budget")         # budget sees hotel + flight prices
+workflow.add_edge("budget", "coordinator")    # ← ALL research → Coordinator
+workflow.add_edge("coordinator", "writer")    # ← Coordinator's validated brief → Writer
 workflow.add_edge("writer", "reviewer")
 
 workflow.add_conditional_edges(
@@ -777,6 +1179,7 @@ if __name__ == "__main__":
         "activities_notes": [],
         "places_notes": [],
         "budget_notes": [],
+        "coordinator_brief": None,
         "draft": None,
         "review": None,
         "iteration": 0,
