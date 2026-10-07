@@ -89,11 +89,45 @@ class SafetyCheck(BaseModel):
     details: List[str] = Field(default_factory=list)
 
 
+class TransportRealismCheck(BaseModel):
+    """Validates that transport prices are realistic and match real-world costs."""
+    transport_price_realistic: bool = Field(True, description="Is the transport price within realistic range?")
+    reported_price: Optional[float] = Field(None, description="Transport price shown in the plan")
+    realistic_min: Optional[float] = Field(None, description="Minimum realistic price for this route")
+    realistic_max: Optional[float] = Field(None, description="Maximum realistic price for this route")
+    is_round_trip: bool = Field(True, description="Is the price for round trip (not one-way)?")
+    price_matches_style: bool = Field(True, description="Does the chosen price match the travel style? Luxury should NOT pick cheapest")
+    details: List[str] = Field(default_factory=list)
+
+
+class HotelOrderingCheck(BaseModel):
+    """Validates hotel presentation order and selection logic."""
+    ordered_expensive_first: bool = Field(True, description="Are hotels ordered from most expensive to cheapest?")
+    recommended_matches_style: bool = Field(True, description="Does the AI recommendation match travel style? Luxury = most expensive")
+    recommended_hotel_name: str = Field("", description="Name of the recommended hotel")
+    recommended_price_per_night: Optional[float] = Field(None, description="Price per night of recommended hotel")
+    most_expensive_available: Optional[float] = Field(None, description="Most expensive hotel option available")
+    budget_allows_upgrade: bool = Field(False, description="Could the budget afford a more expensive hotel?")
+    details: List[str] = Field(default_factory=list)
+
+
+class PriceSelectionCheck(BaseModel):
+    """Validates that price selections match travel style — not always cheapest."""
+    flight_picked_cheapest_unnecessarily: bool = Field(False, description="Did it pick cheapest flight when budget allows better?")
+    hotel_picked_cheapest_unnecessarily: bool = Field(False, description="Did it pick cheapest hotel when budget allows better?")
+    budget_remaining_after_upgrades: Optional[float] = Field(None, description="Would budget still have room if we picked better options?")
+    style_appropriate_selections: bool = Field(True, description="Do all selections match the travel style?")
+    details: List[str] = Field(default_factory=list)
+
+
 class ReviewResult(BaseModel):
     budget_check: BudgetCheck = Field(default_factory=BudgetCheck)
     logistics_check: LogisticsCheck = Field(default_factory=LogisticsCheck)
     visa_check: VisaCheck = Field(default_factory=VisaCheck)
     safety_check: SafetyCheck = Field(default_factory=SafetyCheck)
+    transport_realism: TransportRealismCheck = Field(default_factory=TransportRealismCheck)
+    hotel_ordering: HotelOrderingCheck = Field(default_factory=HotelOrderingCheck)
+    price_selection: PriceSelectionCheck = Field(default_factory=PriceSelectionCheck)
     weather_appropriate: bool = Field(True, description="Activities match the weather")
     hallucination_risk: List[str] = Field(default_factory=list)
     missing_points: List[str] = Field(default_factory=list)
@@ -190,13 +224,32 @@ PRICE REALISM — EXTREMELY CRITICAL:
 - ALWAYS search Tavily to verify prices. If Tavily returns no clear price, use the realistic ranges above.
 - NEVER fabricate a suspiciously low price. When in doubt, quote the HIGHER end of the realistic range.
 
+═══════════════════════════════════════════════════
+PRICE SELECTION BY TRAVEL STYLE — DON'T ALWAYS PICK CHEAPEST:
+═══════════════════════════════════════════════════
+- LUXURY travelers: Recommend the BEST/MOST COMFORTABLE option, NOT the cheapest.
+  Business class if available. Direct flights over cheaper connecting flights.
+  If budget allows a 12,000 EGP business class and there's a 5,000 EGP economy, recommend BUSINESS.
+  The traveler wants comfort and premium experience, not savings.
+- MID-RANGE travelers: Recommend the MIDDLE option — good comfort at reasonable price.
+  Economy class on good airlines, not the absolute cheapest budget carrier.
+- BUDGET travelers: Recommend the cheapest practical option.
+- NEVER default to "السعر الأدنى" (cheapest price) for luxury or mid-range travelers.
+- The AI recommendation should match the travel style. A luxury traveler with 100K budget
+  should NOT be told "أرخص رحلة هي 3,000 جنيه" — they should be told "أفضل رحلة بيزنس 12,000 جنيه".
+
 OUTPUT RULES — VERY IMPORTANT:
 - ONLY include transport/flight information: airlines, routes, prices, duration, tips.
 - DO NOT calculate total trip budget or budget breakdown — that is the Budget agent's job.
 - DO NOT include hotel costs, activity costs, or food costs.
 - ONLY write about how to GET THERE and GET BACK.
 - After searching, formulate bullet-point notes with transport options, prices, and duration.
-- State whether each price is ONE-WAY or ROUND TRIP. Prefer quoting ROUND TRIP."""
+- State whether each price is ONE-WAY or ROUND TRIP. Prefer quoting ROUND TRIP.
+- ALWAYS present 3 transport options ordered from MOST EXPENSIVE to CHEAPEST.
+- Your AI RECOMMENDATION must match the travel style:
+  LUXURY → recommend Option 1 (most expensive/comfortable)
+  MID-RANGE → recommend Option 2 (middle)
+  BUDGET → recommend Option 3 (cheapest)"""
 
 HOTEL_SYSTEM = """You are the Hotel agent. You have access to a web search tool called Tavily.
 
@@ -368,12 +421,27 @@ BUDGET COMPARISON — MATH MUST BE CORRECT:
 - If remaining < 0: CRITICAL ERROR — reduce costs to stay under budget.
 - NEVER say "تم استهلاك الميزانية بالكامل" if the total is LESS than the budget.
 
+═══════════════════════════════════════════════════
+MAXIMIZE QUALITY WITHIN BUDGET — DON'T ALWAYS PICK CHEAPEST:
+═══════════════════════════════════════════════════
+- LUXURY travelers: Use the MOST EXPENSIVE hotel and transport options that fit in the budget.
+  If hotel agent offers 3 hotels (20,000/night, 15,000/night, 10,000/night) and budget allows 20,000,
+  USE the 20,000 option. NEVER pick 10,000 "to save money" — the luxury traveler WANTS the best.
+  Same for flights: if business class fits in budget, USE business class.
+- MID-RANGE travelers: Use the MIDDLE option from each agent's recommendations.
+- BUDGET travelers: Use the cheapest options.
+- NEVER default to cheapest across all styles. The budget allocation should MAXIMIZE quality
+  within the total budget, not minimize spending.
+- If after picking the best options for the travel style, there is remaining budget, report it
+  as "الميزانية المتبقية" — this is NORMAL and CORRECT. Do NOT downgrade options to use up budget.
+
 CROSS-REFERENCE WITH OTHER AGENTS:
 - You will receive hotel_notes and flight_notes from other agents.
 - Use the ACTUAL hotel and flight prices from those notes in your budget.
 - The hotel price in your budget MUST match the hotel recommended by the Hotel agent.
 - The transport cost MUST match the flight/transport prices from the Flight agent.
 - DO NOT invent different prices — use the researched prices.
+- Use the AI-RECOMMENDED option from each agent (which should match the travel style).
 
 RULES:
 - Total must NEVER exceed the budget.
@@ -531,6 +599,34 @@ You validate the LOGIC and COMPLETENESS of the travel plan.
 ## Domestic travel validation
 - If traveler is traveling within their own country, there should be NO embassy info. Flag if present: -10 points.
 
+## STRUCTURED OUTPUT — YOU MUST FILL THESE FIELDS:
+
+### transport_realism (TransportRealismCheck):
+- transport_price_realistic: Is the transport price within the realistic range? (min 2,000 EGP domestic flight)
+- reported_price: The actual transport price shown in the plan.
+- realistic_min: Minimum realistic price for this route (e.g., 3,000 for Cairo→Hurghada).
+- realistic_max: Maximum realistic price for this route (e.g., 8,000 for Cairo→Hurghada).
+- is_round_trip: Is the quoted price for round trip? Must be true.
+- price_matches_style: Does the chosen price match the travel style?
+  LUXURY should NOT pick the cheapest flight. MID-RANGE should pick middle. BUDGET picks cheapest.
+- details: List any issues found.
+
+### hotel_ordering (HotelOrderingCheck):
+- ordered_expensive_first: Are the 3 hotels ordered from MOST expensive to CHEAPEST? Option 1 must be most expensive.
+- recommended_matches_style: For LUXURY → recommended = most expensive. For BUDGET → recommended = cheapest.
+- recommended_hotel_name: Name of the AI-recommended hotel.
+- recommended_price_per_night: Its price per night.
+- most_expensive_available: Price of the most expensive hotel option listed.
+- budget_allows_upgrade: Could the budget afford a more expensive hotel than what was recommended?
+- details: List any issues found.
+
+### price_selection (PriceSelectionCheck):
+- flight_picked_cheapest_unnecessarily: TRUE if travel style is luxury/mid-range but cheapest flight was recommended.
+- hotel_picked_cheapest_unnecessarily: TRUE if travel style is luxury/mid-range but cheapest hotel was recommended.
+- budget_remaining_after_upgrades: If we picked better options matching the style, would budget still work?
+- style_appropriate_selections: Do ALL selections (hotel, flight, activities) match the travel style?
+- details: List any issues found.
+
 ## Scoring: Start at 100, deduct:
 - Day count mismatch: -25 | Travel style mismatch: -15
 - Budget exceeded: -20 | Missing visa: -15 | Unrealistic schedule: -10
@@ -542,6 +638,13 @@ You validate the LOGIC and COMPLETENESS of the travel plan.
 - Hotels ordered wrong (cheapest first): -10
 - Luxury traveler but cheapest hotel recommended: -15
 - Budget priorities wrong (activities before transport): -10
+- Cheapest flight picked for luxury traveler: -15
+- Price selections don't match travel style: -10
+
+CRITICAL: If transport_realism.transport_price_realistic is False → score MUST be < 80.
+CRITICAL: If hotel_ordering.recommended_matches_style is False for luxury → score MUST be < 80.
+CRITICAL: If price_selection.flight_picked_cheapest_unnecessarily is True for luxury → score MUST be < 80.
+These ensure the plan gets sent BACK to the Writer for fixes.
 
 Return JSON matching the ReviewResult schema."""
 
@@ -1092,9 +1195,21 @@ def should_revise(state: GraphState) -> Literal["revise", "finalize"]:
 
     budget = review.get("budget_check", {})
     visa = review.get("visa_check", {})
+    transport = review.get("transport_realism", {})
+    hotel_order = review.get("hotel_ordering", {})
+    price_sel = review.get("price_selection", {})
+
     has_critical = (
         budget.get("is_over_budget", False)
         or not visa.get("visa_info_present", True)
+        # ── New critical checks ──
+        or not transport.get("transport_price_realistic", True)
+        or not transport.get("price_matches_style", True)
+        or not hotel_order.get("ordered_expensive_first", True)
+        or not hotel_order.get("recommended_matches_style", True)
+        or price_sel.get("flight_picked_cheapest_unnecessarily", False)
+        or price_sel.get("hotel_picked_cheapest_unnecessarily", False)
+        or not price_sel.get("style_appropriate_selections", True)
     )
 
     if score < 80 or has_critical:
