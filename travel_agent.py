@@ -60,10 +60,14 @@ class TravelPlan(BaseModel):
 
 
 class BudgetCheck(BaseModel):
-    user_budget: Optional[float] = Field(None, description="Budget the user specified (USD)")
-    estimated_total: Optional[float] = Field(None, description="Total estimated cost (USD)")
+    user_budget: Optional[float] = Field(None, description="Budget the user specified")
+    estimated_total: Optional[float] = Field(None, description="Total estimated cost")
     is_over_budget: bool = Field(False)
     overage_amount: Optional[float] = Field(None)
+    remaining_amount: Optional[float] = Field(None, description="Budget remaining after plan total")
+    remaining_percentage: Optional[float] = Field(None, description="Remaining as % of total budget (e.g. 62 means 62% unused)")
+    budget_underutilized: bool = Field(False, description="TRUE if luxury/mid-range traveler has >40% budget remaining — means plan picked too-cheap options")
+    upgrade_suggestions: List[str] = Field(default_factory=list, description="Specific upgrades to better utilize the budget")
     savings_suggestions: List[str] = Field(default_factory=list)
 
 
@@ -79,6 +83,7 @@ class VisaCheck(BaseModel):
     visa_info_present: bool = Field(True)
     visa_info_complete: bool = Field(True)
     passport_validity_mentioned: bool = Field(False)
+    wrongly_marked_domestic: bool = Field(False, description="TRUE if plan says 'no visa needed' but traveler is international (e.g. Saudi going to Egypt)")
     details: List[str] = Field(default_factory=list)
 
 
@@ -313,13 +318,31 @@ For each hotel:
 
 VISA_SYSTEM = """You are the Visa agent. You have access to a web search tool called Tavily.
 
-FIRST — Read the traveler nationality and destination carefully:
-- If the traveler is traveling WITHIN their own country (e.g. Egyptian going to Hurghada, Egypt),
-  respond with exactly: "No visa required — traveler is within their home country." and STOP.
-  Do not search for anything. Do not write anything else.
-- If destination is in the same country as nationality, same rule applies.
+═══════════════════════════════════════════════════
+STEP 1 — DETERMINE IF THIS IS DOMESTIC OR INTERNATIONAL TRAVEL:
+═══════════════════════════════════════════════════
+You will receive NATIONALITY and DESTINATION COUNTRY explicitly. Compare them:
 
-If visa research IS needed:
+DOMESTIC (same country) — NO visa needed:
+  - Egyptian (مصري) traveling to anywhere in Egypt (شرم الشيخ، الغردقة، أسوان، الأقصر) → domestic
+  - Saudi (سعودي) traveling to anywhere in Saudi Arabia (جدة، الرياض، أبها) → domestic
+  - American traveling to anywhere in USA → domestic
+
+INTERNATIONAL (different country) — visa research REQUIRED:
+  - Saudi (سعودي) traveling to Egypt (شرم الشيخ، الغردقة، القاهرة) → INTERNATIONAL, visa needed!
+  - Egyptian (مصري) traveling to Saudi Arabia → INTERNATIONAL, visa needed!
+  - Egyptian traveling to Turkey, UAE, Europe → INTERNATIONAL, visa needed!
+
+CRITICAL RULE: "سعودي" means Saudi Arabia. "شرم الشيخ" is in EGYPT. Saudi ≠ Egypt → VISA REQUIRED.
+DO NOT confuse the nationality with the destination country. They are SEPARATE fields.
+The fact that both are Arab countries does NOT mean they are the same country.
+
+If DOMESTIC travel:
+  Respond with exactly: "لا حاجة لتأشيرة — المسافر داخل بلده." and STOP.
+
+═══════════════════════════════════════════════════
+STEP 2 — IF INTERNATIONAL, RESEARCH VISA REQUIREMENTS:
+═══════════════════════════════════════════════════
 - Search specifically for visa requirements for THAT nationality passport traveling to THAT destination.
 - Never give generic visa info — always specify the passport nationality.
 - Cover: visa type, required documents, fees, processing time, e-visa options.
@@ -327,6 +350,13 @@ If visa research IS needed:
 - Include visa-on-arrival options if available for that nationality.
 - Warn about common rejection reasons specific to that nationality.
 - Use Tavily for current, accurate info.
+
+COMMON EXAMPLES (for reference):
+- Saudi → Egypt: Visa on arrival available, ~25 USD, or e-visa.
+- Egyptian → Saudi: Visa required (Umrah, work, visit visa types).
+- Egyptian → Turkey: E-visa available.
+- Egyptian → UAE: Visa required.
+
 - After searching, formulate specific bullet-point notes."""
 
 WEATHER_SYSTEM = """You are the Weather agent. You have access to a web search tool called Tavily.
@@ -432,8 +462,22 @@ MAXIMIZE QUALITY WITHIN BUDGET — DON'T ALWAYS PICK CHEAPEST:
 - BUDGET travelers: Use the cheapest options.
 - NEVER default to cheapest across all styles. The budget allocation should MAXIMIZE quality
   within the total budget, not minimize spending.
-- If after picking the best options for the travel style, there is remaining budget, report it
-  as "الميزانية المتبقية" — this is NORMAL and CORRECT. Do NOT downgrade options to use up budget.
+- After calculating total, check the REMAINING BUDGET:
+  remaining = user_budget - total
+  remaining_percentage = (remaining / user_budget) × 100
+
+  BUDGET UTILIZATION RULES:
+  - LUXURY traveler with >40% remaining: THIS IS A PROBLEM. You're not using the budget well.
+    The traveler gave 200,000 and you're only spending 76,500? That means you picked cheap options.
+    → Recommend upgrading: better hotel suite, business class, premium activities, spa packages.
+    → Calculate what the total WOULD BE with upgrades and show both options.
+  - LUXURY traveler with 20-40% remaining: Acceptable but suggest optional upgrades.
+  - LUXURY traveler with <20% remaining: Perfect utilization.
+  - MID-RANGE traveler with >50% remaining: Suggest upgrades to improve the experience.
+  - BUDGET traveler: Any remaining amount is fine — they want to save.
+
+  IMPORTANT: "remaining budget" is sometimes GOOD (short trips, budget travelers) but for LUXURY
+  travelers with large budgets, huge remaining amounts mean the plan is UNDERPERFORMING.
 
 CROSS-REFERENCE WITH OTHER AGENTS:
 - You will receive hotel_notes and flight_notes from other agents.
@@ -503,10 +547,19 @@ Then write: "🏆 توصية الـ AI: [اسم الفندق الأغلى] — �
 For LUXURY travelers, the AI recommendation MUST be the MOST EXPENSIVE hotel (Option 1).
 IMPORTANT: Do NOT repeat or mention hotels anywhere else in the plan.
 
-FOR FLIGHTS/TRANSPORT — present options in a table ONCE ONLY (NO links):
-| وسيلة النقل | المدة | التكلفة | الملاحظات |
-|------------|-------|---------|-----------|
-| option 1 | Xhr | X ج.م | details |
+FOR FLIGHTS/TRANSPORT — present ALL options in a table ONCE ONLY (NO links):
+| وسيلة النقل | المدة | التكلفة/فرد | الإجمالي (عدد المسافرين) | الملاحظات |
+|------------|-------|------------|------------------------|-----------|
+| الخيار 1 (الأفضل) | Xhr | X ج.م | X × عدد = Y ج.م | رحلة رايح وجاي، بيزنس |
+| الخيار 2 | Xhr | X ج.م | X × عدد = Y ج.م | رايح وجاي، اقتصادي |
+| الخيار 3 (الأرخص) | Xhr | X ج.م | X × عدد = Y ج.م | رايح وجاي |
+CRITICAL RULES:
+- ALWAYS show price PER PERSON and TOTAL for all travelers.
+- If 3 travelers and flight costs 8,000/person, write "8,000 ج.م" under التكلفة/فرد and "24,000 ج.م" under الإجمالي.
+- ALWAYS specify if the price is round trip (رايح وجاي) or one-way.
+- Show ALL 3 transport options, ordered from most expensive/comfortable to cheapest.
+- The AI recommendation line below the table should match the travel style.
+- Write: "🏆 توصية الـ AI: [الخيار] — لأن [السبب]"
 IMPORTANT: Do NOT repeat transport options anywhere else.
 
 ═══════════════════════════════════════════════════
@@ -564,8 +617,13 @@ You validate the LOGIC and COMPLETENESS of the travel plan.
 - Hotel far from activities? Unrealistic daily schedule (max 3-4 major)?
 - Missing transit info? No airport transfer plan?
 
-## Visa validation
+## Visa validation — CRITICAL FOR INTERNATIONAL TRAVEL
+- If traveler nationality is DIFFERENT from destination country, visa info MUST be present.
+  Example: Saudi (سعودي) going to Egypt (شرم الشيخ) → visa info REQUIRED. If missing: -20 points.
+- "لا حاجة لتأشيرة — المسافر داخل بلده" is ONLY correct if nationality matches destination country.
+  Saudi → Egypt is NOT domestic! Egyptian → Saudi is NOT domestic!
 - Complete visa info? Passport validity? Common pitfalls?
+- If plan says "no visa needed" for an international traveler: CRITICAL ERROR, -25 points.
 
 ## Weather validation
 - Activities appropriate for weather? Packing list matches weather?
@@ -577,6 +635,12 @@ You validate the LOGIC and COMPLETENESS of the travel plan.
 - The recommended hotel MUST be the same in the hotels section and the budget section.
 - If different hotels are mentioned in different sections, flag: -15 points.
 - For luxury travelers, the recommended hotel should be the MOST luxurious, not "best value".
+- ALL 3 hotel options MUST be shown in the hotels table. If only 1 hotel is shown: -10 points.
+
+## Transport display validation
+- Transport prices MUST show both per-person AND total for all travelers.
+- If 3 travelers and only total is shown without per-person breakdown: -5 points.
+- All transport prices must specify if round trip (رايح وجاي) or one-way: -5 if missing.
 
 ## Budget math validation
 - Add up the budget categories. Total must equal what's reported.
@@ -584,6 +648,19 @@ You validate the LOGIC and COMPLETENESS of the travel plan.
 - For short trips (1-3 days), if hotel cost seems unrealistically high (e.g., 45,000/night), flag: -15 points.
 - Transport cost in budget must match actual flight prices from research.
 - Budget priority must be: Hotel first (biggest share) → Transport second → Activities third.
+
+## Budget utilization validation — CRITICAL FOR LUXURY/MID-RANGE:
+- Calculate: remaining_percentage = (remaining / user_budget) × 100
+- Fill budget_check.remaining_amount and budget_check.remaining_percentage.
+- LUXURY traveler with remaining_percentage > 40%: Set budget_check.budget_underutilized = TRUE.
+  This is a CRITICAL issue: -20 points. The plan is picking cheap options for a luxury traveler.
+  Example: 200,000 budget, 76,500 total, 123,500 remaining (62%) → UNACCEPTABLE for luxury.
+  Add to fix_instructions: "Budget underutilized (X% remaining). Upgrade hotel to most expensive option,
+  use business class flights, add premium activities. Target: use at least 60% of budget for luxury."
+  Add to budget_check.upgrade_suggestions: specific upgrades (better hotel, business class, etc.)
+- MID-RANGE traveler with remaining_percentage > 50%: budget_underutilized = TRUE, -10 points.
+- BUDGET traveler: budget_underutilized = FALSE regardless of remaining. They WANT to save.
+- Short trips (1-3 days) with BUDGET style: large remaining is expected and acceptable.
 
 ## Transport price realism validation
 - Domestic flights in Egypt: minimum 2,000-4,000 EGP round trip. NEVER under 1,000 EGP.
@@ -640,10 +717,15 @@ You validate the LOGIC and COMPLETENESS of the travel plan.
 - Budget priorities wrong (activities before transport): -10
 - Cheapest flight picked for luxury traveler: -15
 - Price selections don't match travel style: -10
+- Budget underutilized (luxury >40% remaining): -20
+- Budget underutilized (mid-range >50% remaining): -10
+- Only 1 hotel shown instead of 3: -10
+- Transport missing per-person price: -5
 
 CRITICAL: If transport_realism.transport_price_realistic is False → score MUST be < 80.
 CRITICAL: If hotel_ordering.recommended_matches_style is False for luxury → score MUST be < 80.
 CRITICAL: If price_selection.flight_picked_cheapest_unnecessarily is True for luxury → score MUST be < 80.
+CRITICAL: If budget_check.budget_underutilized is True for luxury → score MUST be < 80.
 These ensure the plan gets sent BACK to the Writer for fixes.
 
 Return JSON matching the ReviewResult schema."""
@@ -670,14 +752,31 @@ TRAVEL STYLE — MUST BE REFLECTED:
 
 Your output must include:
 1. Clean summary table (destination, dates, budget, visa status)
-2. Day-by-day itinerary with times, places, costs (EXACTLY num_days days)
-3. Practical info (transport, money, language, safety)
-4. Packing checklist (based on weather)
-5. Emergency info (hospital, police numbers)
+
+2. HOTELS — ALWAYS show ALL 3 hotel options in a comparison table:
+| الفندق | النجوم | السعر/ليلة | المميزات | التقييم |
+|--------|--------|------------|----------|---------|
+| فندق 1 (الأغلى) | ⭐⭐⭐⭐⭐ | X ج.م | كذا | 9.2 |
+| فندق 2 | ⭐⭐⭐⭐⭐ | X ج.م | كذا | 8.8 |
+| فندق 3 (الأرخص) | ⭐⭐⭐⭐ | X ج.م | كذا | 8.5 |
+Then: "🏆 توصية الـ AI: [اسم الفندق] — لأن [السبب]"
+CRITICAL: Show ALL 3 hotels. NEVER show just 1 hotel. Ordered from most expensive to cheapest.
+
+3. TRANSPORT — ALWAYS show ALL options with per-person AND total price:
+| وسيلة النقل | المدة | التكلفة/فرد | الإجمالي (عدد المسافرين) | الملاحظات |
+|------------|-------|------------|------------------------|-----------|
+| الخيار 1 | Xhr | X ج.م/فرد | X × عدد = Y ج.م | رايح وجاي |
+CRITICAL: Always show price PER PERSON + TOTAL. If 3 travelers × 8,000 = write "24,000 ج.م إجمالي".
+Then: "🏆 توصية الـ AI: [الخيار] — لأن [السبب]"
+
+4. Day-by-day itinerary with times, places, costs (EXACTLY num_days days)
+5. Practical info (transport, money, language, safety)
+6. Packing checklist (based on weather)
+7. Emergency info (hospital, police numbers)
    IMPORTANT: Do NOT include embassy info for DOMESTIC travel.
    If the traveler is traveling within their own country (e.g., Egyptian in Egypt), NO embassy needed.
    Only include embassy for international travel.
-6. Budget breakdown at the END (total by category vs user budget)
+8. Budget breakdown at the END (total by category vs user budget)
 
 If a review exists, incorporate ALL fixes.
 Make it ready to print and follow.
@@ -904,8 +1003,56 @@ def hotel_node(state: GraphState) -> GraphState:
 
 def visa_node(state: GraphState) -> GraphState:
     agent = _make_research_agent(VISA_SYSTEM)
+
+    # ── Extract nationality explicitly from the question ──
+    question_lower = state['question'].lower()
+    nationality = "unknown"
+    for line in state['question'].split('\n'):
+        line_stripped = line.strip()
+        if 'nationality' in line_stripped.lower() or 'جنسي' in line_stripped:
+            # Extract the value after the colon
+            if ':' in line_stripped:
+                nationality = line_stripped.split(':', 1)[1].strip()
+            elif '：' in line_stripped:
+                nationality = line_stripped.split('：', 1)[1].strip()
+            break
+
+    destination = state['plan']['destination']
+
+    # ── Map nationality to country for clear comparison ──
+    nationality_country_map = {
+        'مصري': 'مصر', 'egyptian': 'egypt',
+        'سعودي': 'السعودية', 'saudi': 'saudi arabia',
+        'إماراتي': 'الإمارات', 'emirati': 'uae',
+        'أردني': 'الأردن', 'jordanian': 'jordan',
+        'لبناني': 'لبنان', 'lebanese': 'lebanon',
+        'عراقي': 'العراق', 'iraqi': 'iraq',
+        'كويتي': 'الكويت', 'kuwaiti': 'kuwait',
+        'بحريني': 'البحرين', 'bahraini': 'bahrain',
+        'عماني': 'عُمان', 'omani': 'oman',
+        'قطري': 'قطر', 'qatari': 'qatar',
+        'تونسي': 'تونس', 'tunisian': 'tunisia',
+        'مغربي': 'المغرب', 'moroccan': 'morocco',
+        'جزائري': 'الجزائر', 'algerian': 'algeria',
+        'سوري': 'سوريا', 'syrian': 'syria',
+        'أمريكي': 'أمريكا', 'american': 'usa',
+        'بريطاني': 'بريطانيا', 'british': 'uk',
+    }
+    nat_lower = nationality.lower().strip()
+    traveler_country = nationality_country_map.get(nat_lower, nationality)
+
     output = _invoke_agent(agent,
-        f"Find visa requirements for: {state['question']}\nDestination: {state['plan']['destination']}"
+        f"""═══ VISA RESEARCH REQUEST ═══
+TRAVELER NATIONALITY: {nationality}
+TRAVELER'S COUNTRY: {traveler_country}
+DESTINATION: {destination}
+
+Is this domestic or international travel?
+- If "{traveler_country}" is the SAME country as "{destination}" → DOMESTIC, no visa needed.
+- If they are DIFFERENT countries → INTERNATIONAL, research visa requirements.
+
+Original request: {state['question']}
+═══════════════════════════"""
     )
     state["visa_notes"] = _parse_notes(output)
     return state
@@ -1201,7 +1348,9 @@ def should_revise(state: GraphState) -> Literal["revise", "finalize"]:
 
     has_critical = (
         budget.get("is_over_budget", False)
+        or budget.get("budget_underutilized", False)
         or not visa.get("visa_info_present", True)
+        or visa.get("wrongly_marked_domestic", False)
         # ── New critical checks ──
         or not transport.get("transport_price_realistic", True)
         or not transport.get("price_matches_style", True)
