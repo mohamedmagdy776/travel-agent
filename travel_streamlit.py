@@ -142,12 +142,14 @@ T = {
                "🏨 Finding hotels...", "🛂 Checking visa requirements...",
                "🌤️ Checking weather...", "🎯 Researching activities...",
                "📍 Finding the best places...", "💰 Calculating your budget...",
-               "✍️ Writing your itinerary...", "🔍 Final review..."],
+               "🔄 Coordinator validating all data...", "✍️ Writing your itinerary...",
+               "🔍 Final review..."],
         "ar": ["📋 بيبني خطة رحلتك...", "✈️ بيدور على رحلات طيران...",
                "🏨 بيدور على فنادق...", "🛂 بيشوف متطلبات التأشيرة...",
                "🌤️ بيشوف الطقس...", "🎯 بيدور على أنشطة...",
                "📍 بيدور على أحسن الأماكن...", "💰 بيحسب الميزانية...",
-               "✍️ بيكتب برنامجك...", "🔍 مراجعة أخيرة..."],
+               "🔄 المنسق بيراجع كل البيانات...", "✍️ بيكتب برنامجك...",
+               "🔍 مراجعة أخيرة..."],
     },
     "ready":            {"en": "✅ Your itinerary is ready!", "ar": "✅ برنامجك جاهز!"},
     "dest_label":       {"en": "📍 Destination",             "ar": "📍 الوجهة"},
@@ -170,11 +172,13 @@ T = {
         "en": ["✈️ Search real flights", "🏨 Find hotels in your budget",
                "🛂 Check visa requirements", "🌤️ Check the weather",
                "🎯 Recommend activities", "📍 Find best places",
-               "💰 Calculate your budget", "📋 Write full itinerary"],
+               "💰 Calculate your budget", "🔄 Cross-validate all data",
+               "📋 Write full itinerary"],
         "ar": ["✈️ بيدور على رحلات حقيقية", "🏨 بيلاقي فنادق في ميزانيتك",
                "🛂 بيشوف التأشيرة", "🌤️ بيشوف الطقس",
                "🎯 بيقترح أنشطة", "📍 بيلاقي أحسن الأماكن",
-               "💰 بيحسب ميزانيتك", "📋 بيكتب برنامجك كامل"],
+               "💰 بيحسب ميزانيتك", "🔄 بيراجع ويتأكد من كل البيانات",
+               "📋 بيكتب برنامجك كامل"],
     },
 }
 
@@ -327,7 +331,8 @@ if submitted:
         "plan": None,
         "flight_notes": [], "hotel_notes": [], "visa_notes": [],
         "weather_notes": [], "activities_notes": [], "places_notes": [],
-        "budget_notes": [], "draft": None, "review": None,
+        "budget_notes": [], "coordinator_brief": None,
+        "draft": None, "review": None,
         "iteration": 0, "max_iterations": 2,
     }
 
@@ -344,7 +349,7 @@ if submitted:
 
     import threading, time
     steps = t("steps")
-    pcts  = [10, 25, 37, 49, 61, 73, 83, 90, 95, 98]
+    pcts  = [8, 20, 32, 42, 52, 62, 72, 80, 87, 93, 98]
 
     def update_progress():
         for pct, msg in zip(pcts, steps):
