@@ -29,6 +29,8 @@ def _md_to_html(text: str) -> str:
         html = '<table style="width:100%;border-collapse:collapse;margin:1rem 0;">\n'
         for i, row in enumerate(table_rows):
             cells = [c.strip() for c in row.strip('|').split('|')]
+            # Convert **bold** inside cells
+            cells = [re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', c) for c in cells]
             tag = 'th' if i == 0 else 'td'
             style = 'border:1px solid #ddd;padding:8px;text-align:right;'
             if i == 0:
