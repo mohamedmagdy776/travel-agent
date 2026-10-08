@@ -280,18 +280,32 @@ CRITICAL VALIDATION:
 - These ranges already account for 2025-2026 price inflation in Egypt.
 
 ═══════════════════════════════════════════════════
-PRICE SELECTION BY TRAVEL STYLE — DON'T ALWAYS PICK CHEAPEST:
+PRICE SELECTION BY TRAVEL STYLE — BUDGET-AWARE:
 ═══════════════════════════════════════════════════
-- LUXURY travelers: Recommend the BEST/MOST COMFORTABLE option, NOT the cheapest.
-  Business class if available. Direct flights over cheaper connecting flights.
-  If budget allows a 20,000 EGP business class and there's a 8,000 EGP economy, recommend BUSINESS.
-  The traveler wants comfort and premium experience, not savings.
+⚠️ CRITICAL RULE: Transport should NEVER exceed 40% of the TOTAL TRIP BUDGET.
+The user's total budget must cover: transport + hotel + activities + food + misc.
+If transport alone takes 50%+ of the budget, the plan WILL fail budget validation.
+
+STEP 1 — CHECK BUDGET FEASIBILITY:
+- Look at the user's total budget and number of days.
+- Estimate: hotel needs ~40-50% of budget, transport ~20-30%, activities ~15-20%, food ~10%.
+- If the best flight option would exceed 30-40% of budget → recommend a cheaper option.
+- Example: Budget = 12,000 AED, 4 days, 2 people.
+  Max transport = 12,000 × 30% = 3,600. So max flight/person = 1,800.
+  Business class at 6,000/person = 12,000 total = 100% of budget → IMPOSSIBLE.
+  Economy at 2,000/person = 4,000 total = 33% → FITS.
+  Recommend ECONOMY even for luxury traveler because business class would blow the budget.
+
+STEP 2 — STYLE-AWARE SELECTION (within budget):
+- LUXURY travelers: Recommend the BEST option that keeps transport under 40% of budget.
+  Business class ONLY if budget allows it AND still leaves enough for hotel + activities.
+  If budget is tight, recommend best economy airline (EgyptAir/Emirates economy > budget carrier).
 - MID-RANGE travelers: Recommend the MIDDLE option — good comfort at reasonable price.
   Economy class on good airlines, not the absolute cheapest budget carrier.
 - BUDGET travelers: Recommend the cheapest practical option.
-- NEVER default to "السعر الأدنى" (cheapest price) for luxury or mid-range travelers.
-- The AI recommendation should match the travel style. A luxury traveler with 100K budget
-  should NOT be told "أرخص رحلة هي 3,000 جنيه" — they should be told "أفضل رحلة بيزنس 12,000 جنيه".
+- NEVER recommend an option that alone exceeds 40% of the total budget, regardless of style.
+- If ALL options exceed 40% of budget, recommend the cheapest one and add a NOTE:
+  "⚠️ تكلفة الطيران مرتفعة مقارنة بالميزانية. يُنصح بزيادة الميزانية أو اختيار وسيلة نقل بديلة."
 
 OUTPUT RULES — VERY IMPORTANT:
 - ONLY include transport/flight information: airlines, routes, prices, duration, tips.
@@ -687,6 +701,12 @@ RULES:
 6. Do NOT invent your own numbers. Copy the exact figures from budget_notes.
 7. If budget_notes say transport = 29,200 but your transport table says 32,000, then
    FIX the transport table to match, or vice versa. They MUST be identical.
+8. If TOTAL > user budget: DO NOT just show negative remaining. FIX IT:
+   - Switch to cheaper transport/hotel options that fit within budget.
+   - If nothing fits, use cheapest options and add:
+     "⚠️ الميزانية لا تكفي لتغطية كل التكاليف. يُنصح بزيادة الميزانية."
+   - NEVER produce a plan with negative remaining without explaining why.
+9. Transport should NEVER exceed 40% of total budget. If it does, pick a cheaper option.
 
 PROCESS: Write the transport table first → note the الإجمالي for the recommended option →
 use THAT exact number in the budget section. Then cross-check against budget_notes.
@@ -712,8 +732,15 @@ You validate the LOGIC and COMPLETENESS of the travel plan.
 - If travel_style is "luxury" but plan recommends buses or budget hotels: -15 points.
 - Add to fix_instructions: "Travel style mismatch: user chose luxury but plan recommends [budget option]. Replace with premium alternative."
 
-## Budget validation
+## Budget validation — CRITICAL
 - Extract user's budget vs estimated total. Flag if over budget.
+- If TOTAL COST > USER BUDGET: this is a CRITICAL error. Score MUST be < 80.
+  -30 points. The plan MUST be revised to fit within budget.
+  fix_instructions: "OVER BUDGET by [amount]. Total [total] exceeds budget [budget].
+  Reduce costs: pick cheaper transport, cheaper hotel, or fewer activities.
+  Transport should NOT exceed 40% of total budget."
+- If transport alone > 40% of budget: -20 points.
+  fix_instructions: "Transport takes [X]% of budget — too high. Pick cheaper transport option."
 - Suggest specific savings.
 - Check that the full budget breakdown is NOT inside the transport section.
 
@@ -821,7 +848,8 @@ You validate the LOGIC and COMPLETENESS of the travel plan.
 
 ## Scoring: Start at 100, deduct:
 - Day count mismatch: -25 | Travel style mismatch: -15
-- Budget exceeded: -20 | Missing visa: -15 | Unrealistic schedule: -10
+- BUDGET EXCEEDED (total > user budget): -30 (CRITICAL — forces score < 80)
+- Transport > 40% of budget: -20 | Missing visa: -15 | Unrealistic schedule: -10
 - No transit info: -10 | No airport transfer: -5 | No safety info: -5
 - Weather mismatch: -5 | Each hallucination risk: -5
 - Budget in wrong section: -10 | Hotel inconsistency: -15
@@ -847,11 +875,21 @@ You validate the LOGIC and COMPLETENESS of the travel plan.
   If the option says "طيران + نقل خاص" but the per-person price only covers the flight → -15 points.
   fix_instructions: "Transport per-person price must include ALL legs. Add transfer cost to per-person price."
 
+CRITICAL: If budget_check.is_over_budget is True → score MUST be < 80. ALWAYS.
+  An over-budget plan is NEVER acceptable. It MUST go back to the Writer for cost reduction.
+CRITICAL: If transport cost > 40% of total budget → score MUST be < 80.
 CRITICAL: If transport_realism.transport_price_realistic is False → score MUST be < 80.
 CRITICAL: If hotel_ordering.recommended_matches_style is False for luxury → score MUST be < 80.
 CRITICAL: If price_selection.flight_picked_cheapest_unnecessarily is True for luxury → score MUST be < 80.
 CRITICAL: If budget_check.budget_underutilized is True for luxury → score MUST be < 80.
 These ensure the plan gets sent BACK to the Writer for fixes.
+
+⚠️ OVER-BUDGET IS THE #1 MOST CRITICAL ERROR. No plan should EVER pass review if total > budget.
+If the budget is genuinely too small for the trip, the plan should:
+1. Use the cheapest viable options for everything
+2. Show exactly what the money covers
+3. Add a note: "الميزانية لا تكفي لتغطية الرحلة بالكامل. يُنصح بزيادة الميزانية إلى [suggested amount]."
+But the plan should NEVER show negative remaining budget without the Reviewer catching it.
 
 Return JSON matching the ReviewResult schema."""
 
@@ -998,7 +1036,16 @@ STEP 3 — BUDGET CROSS-CHECK (MOST CRITICAL)
 - Recalculate: TOTAL = hotel + transport(×travelers) + activities(×travelers) + food(×travelers) + misc
 - REMAINING = user_budget - TOTAL
 - If REMAINING > 0: mark as "under budget" with remaining amount.
-- If REMAINING < 0: FLAG as over-budget and suggest cuts (cut activities first, NOT hotel).
+- If REMAINING < 0: FLAG as OVER-BUDGET. This is CRITICAL — the plan CANNOT go forward like this.
+  RESOLUTION ORDER:
+  1. If transport > 40% of budget → switch to cheaper transport option (economy instead of business, bus instead of flight).
+  2. If hotel > 50% of budget → switch to cheaper hotel option.
+  3. Cut activities.
+  4. If STILL over budget after all cuts → keep the cheapest viable plan and add a note:
+     "⚠️ الميزانية لا تكفي لتغطية الرحلة. يُنصح بزيادة الميزانية إلى [X] أو تقليل عدد الأيام."
+- TRANSPORT BUDGET CHECK: If TOTAL_TRANSPORT > 40% of user_budget → FLAG IT.
+  Switch to cheaper transport even for luxury travelers. A luxury traveler with a small budget
+  should get good economy class, not business class that leaves no money for the hotel.
 - NEVER say "budget fully consumed" if remaining > 0.
 - For SHORT TRIPS (1-3 days): total will naturally be MUCH less than budget. This is CORRECT.
 
@@ -1119,8 +1166,32 @@ def planner_node(state: GraphState) -> GraphState:
 def flight_node(state: GraphState) -> GraphState:
     agent = _make_research_agent(FLIGHT_SYSTEM)
     travel_style = state['plan'].get('travel_style', 'mid-range')
+
+    # ── Extract budget from the question ──
+    total_budget = "unknown"
+    num_travelers = 1
+    for line in state['question'].split('\n'):
+        line_stripped = line.strip().lower()
+        if 'budget' in line_stripped or 'الميزانية' in line_stripped or 'ميزانية' in line_stripped:
+            if ':' in line_stripped:
+                total_budget = line_stripped.split(':', 1)[1].strip()
+        if 'number of travelers' in line_stripped or 'عدد المسافرين' in line_stripped:
+            if ':' in line_stripped:
+                val = line_stripped.split(':', 1)[1].strip()
+                try:
+                    num_travelers = int(val)
+                except ValueError:
+                    pass
+
     output = _invoke_agent(agent,
-        f"Find transport for: {state['question']}\nDestination: {state['plan']['destination']}\nDates: {state['plan']['travel_dates']}\nTravel style: {travel_style}\nIMPORTANT: Travel style is '{travel_style}' — recommend transport that matches this style."
+        f"Find transport for: {state['question']}\nDestination: {state['plan']['destination']}\nDates: {state['plan']['travel_dates']}\nTravel style: {travel_style}\n\n"
+        f"═══ BUDGET CONTEXT ═══\n"
+        f"TOTAL TRIP BUDGET: {total_budget}\n"
+        f"Number of travelers: {num_travelers}\n"
+        f"Transport should NOT exceed 40% of total budget.\n"
+        f"If business class would exceed 40% of budget, recommend economy instead.\n"
+        f"═══════════════════════\n\n"
+        f"IMPORTANT: Travel style is '{travel_style}' — recommend transport that matches this style BUT stays within budget constraints. ALWAYS present 3 transport options."
     )
     state["flight_notes"] = _parse_notes(output)
     return state
