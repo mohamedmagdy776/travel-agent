@@ -212,13 +212,31 @@ Return valid JSON matching the TravelPlan schema."""
 
 FLIGHT_SYSTEM = """You are the Flight/Transport agent. You have access to a web search tool called Tavily.
 
-TRAVEL STYLE IS CRITICAL:
-- LUXURY: Recommend flights (business class if available), private transfers, premium transport ONLY.
-  NEVER recommend a public bus or shared minibus for luxury travelers.
+TRAVEL STYLE — HOW IT APPLIES TO TRANSPORT (READ CAREFULLY):
+⚠️ THE GOLDEN RULE: the flight must NEVER break the budget. Within that rule, pick the BEST
+   transport the budget can comfortably afford while still leaving enough for a great hotel +
+   activities + dining.
+   • If the budget COMFORTABLY covers a premium/business flight AND still leaves plenty for a
+     high-level stay → a LUXURY traveler can absolutely have that premium/business flight. That is fine.
+   • ONLY when the best flight would break the budget (or starve the hotel/activities) do you step
+     DOWN — to the best economy/premium-economy, then to a cheaper transit/connecting route —
+     because a flight is just transit, and the luxury is better spent on the stay than on an
+     over-expensive ticket the budget can't really afford.
+   In short: reduce the flight ONLY when it breaks the budget; otherwise the best affordable flight is good.
+
+- LUXURY: Recommend the BEST flight the budget comfortably allows (business/premium is fine WHEN the
+  budget covers it and the hotel + activities + dining are still well funded). If the best flight would
+  break the budget, step down to the best economy within the transport cap and move the luxury into the stay.
+  For ground legs, prefer a private transfer over a bus.
   If no direct flights exist, recommend: flight to nearest airport + private car/taxi transfer.
   Example: Dahab luxury = fly to Sharm El Sheikh + private transfer (1.5hrs, ~500-800 EGP).
-- MID-RANGE: Recommend economy flights, mix of private and shared transport.
-- BUDGET: Recommend cheapest options — buses, shared transport, budget airlines.
+- MID-RANGE: Recommend good-value economy on a reputable airline — comfort at a reasonable price.
+- BUDGET: Recommend cheapest options — budget airlines, transit/connecting routes, shared transport.
+
+ALWAYS also search the CHEAPEST routes (connecting / transit flights on carriers like Pegasus, AJet,
+Aegean, Wizz, etc. are often far cheaper than a direct flagship-carrier flight) and include at least
+one as an option — so that IF the budget is tight, there is a cheaper routing ready to fall back to.
+Present options cheapest-to-most-expensive; recommend the best one that fits the budget comfortably.
 
 Rules:
 - Search for real transport options for the user's route and dates.
@@ -261,12 +279,18 @@ INTERNATIONAL FLIGHTS IN USD (round trip per person, economy — 2025-2026):
   Cairo → Rome/Milan (Italy): $250 - $500 USD (EgyptAir ~$300, budget airlines ~$200-250)
   Cairo → Istanbul (Turkey): $200 - $400 USD
   Cairo → Paris/London/Berlin: $300 - $600 USD
+  Cairo → Zurich/Geneva (Switzerland): $350 - $600 USD economy direct (SWISS/EgyptAir ~$400-600);
+    transit routes (via Istanbul/Athens on Pegasus, AJet, Aegean) are often $230 - $400 USD round trip.
   Cairo → Dubai/Abu Dhabi: $200 - $400 USD
   Cairo → Bangkok/KL: $400 - $800 USD
-  ANY Middle East → Europe: $300 - $700 USD
+  ANY Middle East → Europe: $300 - $700 USD economy (transit routes cheaper, $230-450)
   ANY Middle East → SE Asia: $400 - $900 USD
   USA/Canada → Europe: $400 - $900 USD
-  ABSOLUTE MAXIMUM for economy round trip: $900 USD (anything above = WRONG or business class)
+  ABSOLUTE MAXIMUM for ECONOMY round trip: $900 USD (an ECONOMY ticket above this = WRONG data).
+  ⚠️ A price of $1,200-1,600 is NOT economy — it is BUSINESS/premium class (or a hallucinated economy price).
+     So do NOT label such a price as "economy". Cairo→Switzerland ECONOMY is $350-600, NEVER $1,500+ as economy.
+     (You MAY still quote a genuine business/premium flight at that price — but only when the budget
+      comfortably affords it; and always label it clearly as business/premium, not economy.)
   ══════════════════════════════════════════════════════════════
   ⚠️ If you quote a price ABOVE these ranges, you are HALLUCINATING.
   A Cairo→Rome economy round trip is $250-$500, NEVER $1,000+.
@@ -316,13 +340,17 @@ STEP 1 — CHECK BUDGET FEASIBILITY:
   Recommend ECONOMY even for luxury traveler because business class would blow the budget.
 
 STEP 2 — STYLE-AWARE SELECTION (within budget):
-- LUXURY travelers: Recommend the BEST option that keeps transport under 40% of budget.
-  Business class ONLY if budget allows it AND still leaves enough for hotel + activities.
-  If budget is tight, recommend best economy airline (EgyptAir/Emirates economy > budget carrier).
-- MID-RANGE travelers: Recommend the MIDDLE option — good comfort at reasonable price.
-  Economy class on good airlines, not the absolute cheapest budget carrier.
-- BUDGET travelers: Recommend the cheapest practical option.
+- LUXURY travelers: Recommend the BEST flight the budget comfortably allows. If the budget covers a
+  premium/business flight AND still leaves the hotel + activities + dining well funded → recommend that
+  premium/business flight; that is perfectly fine. ONLY if the best flight would exceed the transport
+  cap (or starve the stay) do you step down to the best economy within the cap and move the luxury
+  into the hotel/experiences. Reduce the flight ONLY when it would break the budget.
+- MID-RANGE travelers: Recommend good-value economy on a decent airline — comfort at a reasonable price.
+- BUDGET travelers: Recommend the cheapest practical option (budget carriers, transit routes).
 - NEVER recommend an option that alone exceeds 40% of the total budget, regardless of style.
+- ALWAYS also surface at least one cheaper routing (transit/connecting carriers) as a fallback option,
+  so that IF the budget is tight there is a cheaper way ready — but you do NOT have to pick it when the
+  budget comfortably affords something better.
 - If ALL options exceed 40% of budget, recommend the cheapest one and add a NOTE:
   "⚠️ تكلفة الطيران مرتفعة مقارنة بالميزانية. يُنصح بزيادة الميزانية أو اختيار وسيلة نقل بديلة."
 
@@ -1320,7 +1348,10 @@ def _extract_total_from_draft(draft: str, user_budget: float) -> dict:
             r'(?:\*\*)?TOTAL(?:\*\*)?.*?<td[^>]*>\s*(?:\*\*)?\$?([\d,]+)',
             r'Total.*?<td[^>]*>\s*\$?([\d,]+)',
             # Markdown pipe table: | TOTAL | $6,474 | or | **TOTAL** | **$6,474** |
-            r'\|\s*(?:\*\*)?(?:TOTAL|الإجمالي\s*الكلي|إجمالي)(?:\*\*)?\s*\|\s*(?:\*\*)?\$?([\d,]+)',
+            # "الكلي" is optional — the app often renders just "الإجمالي".
+            r'\|\s*(?:\*\*)?(?:TOTAL|الإجمالي(?:\s*الكلي)?|إجمالي)(?:\*\*)?\s*\|\s*(?:\*\*)?\$?\s*([\d,]+)',
+            # Plain line (no pipes): "الإجمالي $9,144" / "الإجمالي: $9,144"
+            r'الإجمالي(?:\s*الكلي)?\s*[:\s=]*\$\s*([\d,]+)',
         ]
         for pattern in table_patterns:
             match = re.search(pattern, draft, re.IGNORECASE | re.DOTALL)
@@ -1374,6 +1405,29 @@ def _extract_total_from_draft(draft: str, user_budget: float) -> dict:
         parts = [x for x in [transport_total, hotel_total, activities_total] if x]
         if len(parts) >= 2:
             total = sum(parts)
+
+    # ── Pattern 4: NEGATIVE "الميزانية المتبقية" (remaining budget) is the most robust
+    #    over-budget signal — the app prints it as -$2,144 when the plan overshoots.
+    #    From it we can recover the total: total = budget + |remaining|.
+    if total is None or total <= user_budget:
+        # Grab whatever follows the "remaining budget" label up to the row/line end
+        # (handles pipe tables "| الميزانية المتبقية | -$2,144 |" and plain lines alike).
+        rem_m = re.search(
+            r'(?:الميزانية\s*المتبقية|المتبقّ?ي|Remaining(?:\s*Budget)?)\s*[:\s=|]*([^\n|]{0,24})',
+            draft, re.IGNORECASE)
+        if rem_m:
+            token = rem_m.group(1)
+            # Negative remaining (minus sign or parentheses) ⇒ over budget.
+            if re.search(r'[-−(]', token):
+                num = re.sub(r'[^\d]', '', token)
+                try:
+                    deficit = float(num) if num else 0
+                    if deficit > 0:
+                        recovered_total = user_budget + deficit
+                        if total is None or recovered_total > total:
+                            total = recovered_total
+                except ValueError:
+                    pass
 
     is_over = total is not None and total > user_budget
     overage = (total - user_budget) if is_over and total else 0
@@ -1514,6 +1568,237 @@ def _inject_budget_compliant_option(notes: List[str], max_price: float, category
         print(f"[CODE-LEVEL] Injected budget-compliant {category} option (max: {int(max_price):,}) — all research options were over budget")
 
     return notes
+
+
+def _cheapest_unit_price(notes: List[str], kind: str):
+    """Scan research notes and return the cheapest realistic per-unit price found
+    (per person for transport, per night for hotel), plus a short source label.
+    Returns (price: float|None, label: str|None)."""
+    if not notes:
+        return None, None
+    floor = 100 if kind == "transport" else 30   # ignore ratings/durations/"4 ليالٍ"
+    ceil = 50000                                   # ignore absurd parses
+    best, best_label = None, None
+    price_re = re.compile(
+        r'(?:\$|USD\s*|EGP\s*|ج\.م\s*|AED\s*|د\.إ\s*|SAR\s*|ر\.س\s*|EUR\s*|€\s*|£\s*)([\d,]+(?:\.\d+)?)'
+        r'|(\d[\d,]+(?:\.\d+)?)\s*(?:\$|USD|EGP|ج\.م|AED|د\.إ|SAR|ر\.س|EUR|€|£)',
+        re.IGNORECASE)
+    for note in notes:
+        up = note.upper()
+        if '⛔' in note or 'REMOVED' in up or 'OVER BUDGET' in up:
+            continue  # skip the "removed over-budget" placeholder lines
+        for g in price_re.findall(note):
+            s = g[0] or g[1]
+            if not s:
+                continue
+            try:
+                v = float(s.replace(',', ''))
+            except ValueError:
+                continue
+            if floor <= v <= ceil and (best is None or v < best):
+                best, best_label = v, note.strip()[:120]
+    return best, best_label
+
+
+def _priciest_unit_price(notes: List[str], kind: str, ceiling=None):
+    """Scan research notes and return the most expensive realistic per-unit price found
+    at or below `ceiling` (if given), plus a short source label. Used to pick the BEST
+    hotel the budget can afford once transport has been minimized."""
+    if not notes:
+        return None, None
+    floor = 100 if kind == "transport" else 30
+    ceil = 50000
+    best, best_label = None, None
+    price_re = re.compile(
+        r'(?:\$|USD\s*|EGP\s*|ج\.م\s*|AED\s*|د\.إ\s*|SAR\s*|ر\.س\s*|EUR\s*|€\s*|£\s*)([\d,]+(?:\.\d+)?)'
+        r'|(\d[\d,]+(?:\.\d+)?)\s*(?:\$|USD|EGP|ج\.م|AED|د\.إ|SAR|ر\.س|EUR|€|£)',
+        re.IGNORECASE)
+    for note in notes:
+        up = note.upper()
+        if '⛔' in note or 'REMOVED' in up or 'OVER BUDGET' in up:
+            continue
+        for g in price_re.findall(note):
+            s = g[0] or g[1]
+            if not s:
+                continue
+            try:
+                v = float(s.replace(',', ''))
+            except ValueError:
+                continue
+            if floor <= v <= ceil and (ceiling is None or v <= ceiling) and (best is None or v > best):
+                best, best_label = v, note.strip()[:120]
+    return best, best_label
+
+
+def _fmt_money(value, currency: str) -> str:
+    """Format an amount with the currency symbol in the right place."""
+    v = int(round(value))
+    if currency in ('$', '€', '£'):
+        return f"{currency}{v:,}"
+    return f"{v:,} {currency}"
+
+
+def _build_budget_section(transport, hotel, activities, num_nights, user_budget,
+                          currency, note: str) -> str:
+    """Build a clean, authoritative Arabic budget section with correct math."""
+    total = transport + hotel + activities
+    remaining = user_budget - total
+    rem_str = _fmt_money(remaining, currency)
+    if remaining < 0:
+        rem_str = "-" + _fmt_money(abs(remaining), currency)
+    lines = [
+        "## 💰 الميزانية",
+        "",
+        "| البند | التكلفة |",
+        "|---|---|",
+        f"| النقل (كل المسافرين) | {_fmt_money(transport, currency)} |",
+        f"| الفندق ({num_nights} ليالٍ) | {_fmt_money(hotel, currency)} |",
+        f"| الأنشطة والتجارب | {_fmt_money(activities, currency)} |",
+        f"| **الإجمالي الكلي** | **{_fmt_money(total, currency)}** |",
+        f"| الميزانية المتاحة | {_fmt_money(user_budget, currency)} |",
+        f"| الميزانية المتبقية | {rem_str} |",
+        "",
+        note,
+    ]
+    return "\n".join(lines)
+
+
+def _force_budget_fit(resp: str, flight_notes, hotel_notes, user_budget, num_nights,
+                      num_travelers, max_transport_per_person, max_hotel_per_night, currency,
+                      travel_style="luxury"):
+    """DETERMINISTIC GUARANTEE — the final safety net.
+
+    If the draft is still over budget, rebuild the budget section using the CHEAPEST flight +
+    hotel found in research (falling back to the budget caps). The plan is NEVER shown over
+    budget while a cheaper combination fits. Only when even the cheapest feasible combination
+    exceeds the budget do we show an honest "increase the budget" notice — which is the one
+    acceptable case for an over-budget result.
+
+    Returns (new_resp, status): status is "ok" (already fit or fixed) or "infeasible".
+    """
+    check = _extract_total_from_draft(resp, user_budget)
+    if not check.get("is_over_budget"):
+        return resp, "ok"
+    if not user_budget:
+        return resp, "ok"
+
+    num_travelers = max(int(num_travelers or 1), 1)
+    num_nights = max(int(num_nights or 1), 1)
+
+    # ── cheapest realistic per-unit from research ──
+    cheap_fp, fp_label = _cheapest_unit_price(flight_notes, "transport")
+    cheap_hn, hn_label = _cheapest_unit_price(hotel_notes, "hotel")
+
+    cur = currency or "$"
+    style = (travel_style or "").lower()
+    is_budget_style = any(k in style for k in ['budget', 'اقتصادي', 'رخيص', 'economy'])
+
+    # ── STEP 1 — MINIMIZE TRANSPORT (the flight is just transit) ──
+    # The cheapest REAL flight found in research is the achievable floor. The cap is only a
+    # fallback when research gave no price — we must not invent an unbookable cheap flight.
+    tp_per_person = cheap_fp if cheap_fp else (max_transport_per_person or 0)
+    transport_total = tp_per_person * num_travelers
+
+    # ── FEASIBILITY — cheapest flight + cheapest affordable hotel must fit ──
+    floor_hn = cheap_hn if cheap_hn else (max_hotel_per_night or 0)
+    min_needed = transport_total + floor_hn * num_nights
+    if min_needed > user_budget:
+        # Even the cheapest flight + cheapest hotel overshoots → honest "increase budget" notice.
+        needed = _fmt_money(min_needed, cur)
+        note = (
+            f"⚠️ **الميزانية غير كافية لهذه الوجهة.** حتى بأرخص رحلة طيران متاحة "
+            f"({_fmt_money(tp_per_person, cur)}/شخص) وأرخص فندق مناسب ({_fmt_money(floor_hn, cur)}/ليلة)، "
+            f"تبدأ التكلفة من حوالي {needed} لـ {num_travelers} مسافرين و{num_nights} ليالٍ — "
+            f"وهذا يتجاوز ميزانيتك ({_fmt_money(user_budget, cur)}).\n\n"
+            f"**الحلول المقترحة:** زيادة الميزانية إلى {needed} على الأقل، أو تقليل عدد الليالي/المسافرين، "
+            f"أو اختيار وجهة أقرب وأقل تكلفة."
+        )
+        new_section = _build_budget_section(
+            transport_total, floor_hn * num_nights, 0, num_nights, user_budget, cur, note)
+        return _replace_budget_section(resp, new_section), "infeasible"
+
+    # ── STEP 2 — SPEND THE SAVED MONEY ON THE STAY ──
+    hn_label = None
+    if is_budget_style:
+        # Budget traveler: keep it lean; a large leftover is fine for them.
+        hn_per_night = floor_hn
+        hotel_total = hn_per_night * num_nights
+        activities_total = max(int(user_budget * 0.08), 0)
+        # never exceed budget
+        if transport_total + hotel_total + activities_total > user_budget:
+            activities_total = max(int(user_budget - transport_total - hotel_total), 0)
+        fill_note = (
+            "✅ **تم ضبط الخطة لتناسب ميزانيتك** باختيار أرخص وسيلة نقل مناسبة."
+        )
+    else:
+        # LUXURY / MID-RANGE: use ~96% of the budget — raise the HOTEL level and the
+        # dining/activities, since the money saved on the flight belongs in the experience.
+        usable = user_budget * 0.96 - transport_total           # hotel + activities pool
+        if usable < floor_hn * num_nights:                      # safety (shouldn't happen post-feasibility)
+            usable = user_budget - transport_total
+        afford_per_night = int((usable * 0.70) / num_nights)    # hotel may take up to ~70% of the pool
+        # Pick the BEST real hotel the pool can afford; else use the affordable ceiling itself.
+        pricey_hn, hn_label = _priciest_unit_price(hotel_notes, "hotel", ceiling=max(afford_per_night, floor_hn))
+        hn_per_night = pricey_hn if pricey_hn else afford_per_night
+        hn_per_night = max(hn_per_night, floor_hn)               # at least the cheapest real hotel
+        hotel_total = hn_per_night * num_nights
+        # Everything else in the pool goes to dining + activities + outings.
+        activities_total = max(int(usable - hotel_total), int(user_budget * 0.08))
+        # Guarantee we stay strictly under budget (trim activities, then hotel, if rounding pushed over).
+        total = transport_total + hotel_total + activities_total
+        if total > user_budget:
+            over = total - user_budget
+            activities_total = max(activities_total - int(over), 0)
+            total = transport_total + hotel_total + activities_total
+            if total > user_budget:
+                hotel_total = max(hotel_total - int(total - user_budget), floor_hn * num_nights)
+        fill_note = (
+            "✅ **تم ضبط الخطة لتناسب ميزانيتك مع الحفاظ على مستوى فاخر.** قلّلنا تكلفة الطيران "
+            "لأقل خيار اقتصادي مناسب (الطيران مجرد وسيلة انتقال)، وحوّلنا الفرق لرفع مستوى الفندق "
+            "والمطاعم والأنشطة — عشان تستغل ميزانيتك بالكامل في تجربة أفخم، من غير ما تتعدّى الميزانية."
+        )
+
+    # ── adjustment-source note ──
+    def _clean_label(lbl):
+        if not lbl:
+            return ""
+        lbl = re.sub(r'^[\s✅⚠️⛔]*\[[^\]]*\]\s*', '', lbl)
+        return lbl.strip(" .*").strip()
+    src_bits = []
+    fp_clean, hn_clean = _clean_label(fp_label), _clean_label(hn_label)
+    if fp_clean:
+        src_bits.append(f"الطيران: {fp_clean}")
+    if hn_clean:
+        src_bits.append(f"الفندق: {hn_clean}")
+    src = ("\n\n*" + " — ".join(src_bits) + "*") if src_bits else ""
+
+    new_section = _build_budget_section(
+        transport_total, hotel_total, activities_total, num_nights, user_budget, cur, fill_note + src)
+    return _replace_budget_section(resp, new_section), "ok"
+
+
+def _replace_budget_section(resp: str, new_section: str) -> str:
+    """Replace the existing budget section (from the 💰 header to the next top-level
+    section header, or end of text) with the rebuilt one. Appends if no header is found."""
+    # Find the budget header: a line containing 💰, or an Arabic/English 'الميزانية'/'Budget' heading.
+    header_re = re.compile(r'(^|\n)\s*#{0,3}\s*💰[^\n]*', re.IGNORECASE)
+    m = header_re.search(resp)
+    if not m:
+        header_re2 = re.compile(r'(^|\n)#{1,4}\s*(?:الميزانية|Budget)\b[^\n]*', re.IGNORECASE)
+        m = header_re2.search(resp)
+    if not m:
+        # No recognizable budget section — append the authoritative one.
+        return resp.rstrip() + "\n\n" + new_section + "\n"
+
+    start = m.start() if m.start() == 0 else m.start() + 1  # keep the leading newline out of slice
+    # Find the next section header AFTER this one to know where the budget section ends.
+    rest = resp[m.end():]
+    next_hdr = re.search(r'\n\s*#{1,4}\s+\S|\n\s*(?:🆘|📞|🏥|🧳|🎒|⚠️ تنبيه)', rest)
+    if next_hdr:
+        end = m.end() + next_hdr.start()
+    else:
+        end = len(resp)
+    return resp[:start].rstrip() + "\n\n" + new_section + "\n\n" + resp[end:].lstrip()
 
 
 # ─────────────────────────────────────────────
@@ -2100,12 +2385,18 @@ def finalizer_node(state: GraphState) -> GraphState:
 ║  Current total: ~{int(budget_result['estimated_total']):,} vs budget: {int(user_budget):,}     ║
 ║  Over by: {int(budget_result['overage']):,}                                     ║
 ║                                                                      ║
-║  YOU MUST FIX THIS IN YOUR FINAL OUTPUT:                             ║
-║  1) ALL flights MUST be ECONOMY class                                ║
-║  2) Hotel per night MUST be ≤ {max_hotel_per_night:,}                          ║
-║  3) Transport total (all travelers) MUST be ≤ {max_transport:,}                ║
-║  4) Recalculate ALL totals after making changes                      ║
-║  5) Final total MUST be < {int(user_budget):,}                                 ║
+║  FIX IT IN THIS ORDER — do NOT cheapen the whole trip:               ║
+║  1) FIRST cut TRANSPORT to the CHEAPEST economy/transit flight        ║
+║     (≤ {max_transport:,} total for all travelers). The flight is just      ║
+║     transit — this is the biggest saving.                            ║
+║  2) KEEP the hotel & activities HIGH. Redirect the money saved on the ║
+║     flight INTO the stay: a better hotel, more named restaurants,     ║
+║     more excursions/outings. Do NOT downgrade the hotel unless step 1 ║
+║     alone still leaves you over budget.                              ║
+║  3) Only if STILL over after a cheap flight, trim hotel toward        ║
+║     ≤ {max_hotel_per_night:,}/night.                                           ║
+║  4) Recalculate ALL totals. Final total MUST be < {int(user_budget):,}         ║
+║     and SHOULD use ~85-95% of the budget (don't leave it half-unused).║
 ╚══════════════════════════════════════════════════════════════════════╝
 """
         print(f"[CODE-LEVEL] Force budget fix in finalizer: over by {int(budget_result['overage']):,}")
@@ -2226,13 +2517,16 @@ Draft to fix:
                 print(f"[CODE-LEVEL] Second pass didn't improve — keeping first version")
 
         # ══════════════════════════════════════════════════════════════
-        # LAST RESORT: If STILL over budget after 2 LLM passes, do a
-        # mathematical correction — append a budget warning to the draft
+        # LAST RESORT — HARD GUARANTEE: if STILL over budget after the LLM
+        # passes, the plan must NOT be shipped over budget while cheaper
+        # options exist. We (1) try one final LLM pass with the cheapest
+        # flight/hotel LOCKED IN, then (2) deterministically rebuild the
+        # budget section from the cheapest research options so the result
+        # is guaranteed within budget. An over-budget result is only shown
+        # when even the cheapest feasible combination exceeds the budget.
         # ══════════════════════════════════════════════════════════════
         final_final = _extract_total_from_draft(resp, user_budget)
         if final_final["is_over_budget"]:
-            overage = int(final_final["overage"])
-            est_total = int(final_final["estimated_total"])
             # Determine currency symbol used in draft
             cur = "$"
             for sym in ['ج.م', 'EGP', 'AED', 'د.إ', 'USD', 'SAR', 'ر.س', 'EUR', '€', '£']:
@@ -2240,21 +2534,49 @@ Draft to fix:
                     cur = sym
                     break
 
-            budget_warning = f"""
+            # cheapest flight (the lever we cut) for the locked LLM pass
+            cheap_fp, _ = _cheapest_unit_price(state.get('flight_notes', []), "transport")
+            lock_fp = int(cheap_fp) if cheap_fp else int(max_transport_per_person or 0)
+            # after a cheap flight, this is how much is left for the stay (hotel + experiences)
+            stay_pool = int(user_budget - lock_fp * num_travelers)
 
----
+            print(f"[CODE-LEVEL] LAST RESORT: still over budget (over by {int(final_final['overage']):,}) — "
+                  f"cutting flight to ≤{lock_fp:,}/pp, {stay_pool:,} left for the stay")
 
-⚠️ **تنبيه الميزانية / Budget Notice:**
-الخطة الحالية تتجاوز الميزانية بمبلغ {overage:,} {cur} (الإجمالي: {est_total:,} {cur} vs الميزانية: {int(user_budget):,} {cur}).
-The current plan exceeds the budget by {overage:,} {cur} (Total: {est_total:,} {cur} vs Budget: {int(user_budget):,} {cur}).
+            # (1) Final LLM pass: LOCK the cheap flight, then SPEND the rest on a high-level stay.
+            if lock_fp:
+                resp_locked = llm.invoke([
+                    SystemMessage(content=FINALIZER_SYSTEM),
+                    HumanMessage(content=f"""The draft below is OVER the budget of {int(user_budget):,}. Rebuild it to FIT —
+but do NOT cheapen the whole trip. The concept: the flight is just transit, so cut it to the
+cheapest economy option, then put the money saved INTO the stay (a better/higher-level hotel,
+more named restaurants, more excursions and outings). This is a '{travel_style}' trip.
 
-**للالتزام بالميزانية / To stay within budget:**
-- اختر درجة اقتصادية للطيران (حد أقصى: {max_transport_per_person:,} {cur}/شخص) / Choose economy class flights (max: {max_transport_per_person:,} {cur}/person)
-- اختر فندق أرخص (حد أقصى: {max_hotel_per_night:,} {cur}/ليلة) / Choose a cheaper hotel (max: {max_hotel_per_night:,} {cur}/night)
-- قلل تكاليف الأنشطة / Reduce activities costs
-"""
-            resp += budget_warning
-            print(f"[CODE-LEVEL] LAST RESORT: Appended budget warning to draft (over by {overage:,})")
+RULES:
+- Transport: LOCK to the CHEAPEST economy/transit flight ≈ {lock_fp:,}/person → {lock_fp * num_travelers:,} total
+  for {num_travelers} travelers. Prefer transit/connecting routes. Do NOT use business class.
+- Stay (hotel + activities + dining): spend about {stay_pool:,} — RAISE the hotel level and add named
+  premium restaurants, excursions, and outings across the days. Keep it luxurious, just within budget.
+- The FINAL TOTAL MUST be < {int(user_budget):,}, and SHOULD use ~85-95% of the budget (don't leave it half-unused).
+- Recalculate the budget table. Keep the same language, format, structure, and number of itinerary days.
+
+Draft to fix:
+{resp}
+"""),
+                ]).content
+                check_locked = _extract_total_from_draft(resp_locked, user_budget)
+                if not check_locked["is_over_budget"]:
+                    resp = resp_locked
+                    print(f"[CODE-LEVEL] Locked pass fit the budget: {int(check_locked['estimated_total'] or 0):,}")
+
+            # (2) DETERMINISTIC GUARANTEE — rebuild the budget section no matter what the LLM did.
+            resp, fit_status = _force_budget_fit(
+                resp, state.get('flight_notes', []), state.get('hotel_notes', []),
+                user_budget, num_nights, num_travelers,
+                max_transport_per_person, max_hotel_per_night, cur,
+                travel_style=travel_style,
+            )
+            print(f"[CODE-LEVEL] _force_budget_fit status: {fit_status}")
 
         # ══════════════════════════════════════════════════════════════
         # POST-CHECK: If budget is underutilized for a non-budget traveler,
@@ -2375,10 +2697,15 @@ def should_revise(state: GraphState) -> Literal["revise", "finalize"]:
             review["fix_instructions"].insert(0,
                 f"CRITICAL: Plan is OVER BUDGET by {int(overage):,}. "
                 f"Total={int(estimated):,} but budget={int(user_budget):,}. "
-                f"You MUST: 1) Switch to ECONOMY class flights if using business/first class. "
-                f"2) Pick a cheaper hotel (max {int(user_budget * 0.45 / max(state['plan']['num_days'], 1)):,}/night). "
-                f"3) Reduce activities costs. "
-                f"The final total MUST be LESS than {int(user_budget):,}."
+                f"FIX IT IN THIS ORDER (do NOT cheapen the whole trip): "
+                f"1) FIRST cut TRANSPORT — switch to the CHEAPEST economy/transit flight. The flight is "
+                f"just transit; this is the biggest saving and frees money for the rest. "
+                f"2) KEEP the hotel and the activities/dining at a HIGH level — redirect the money saved on "
+                f"the flight INTO the stay (better hotel, more named restaurants, more excursions/outings). "
+                f"Do NOT downgrade the hotel unless step 1 alone still leaves you over budget. "
+                f"3) Only if still over after minimizing the flight, trim the hotel toward "
+                f"{int(user_budget * 0.45 / max(state['plan']['num_days'], 1)):,}/night. "
+                f"The final total MUST be LESS than {int(user_budget):,}, and should USE ~85-95% of it."
             )
             state["review"] = review
 
