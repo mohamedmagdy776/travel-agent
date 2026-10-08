@@ -227,26 +227,64 @@ Rules:
 - Don't use Tavily when web search is unnecessary.
 
 ═══════════════════════════════════════════════════
-PRICE REALISM — EXTREMELY CRITICAL:
+PRICE REALISM — EXTREMELY CRITICAL (2025-2026 PRICES):
 ═══════════════════════════════════════════════════
-- ALWAYS quote ROUND TRIP (return) prices, not one-way. State clearly "رايح وجاي" / "round trip".
-- Domestic flights within Egypt cost AT LEAST 2,000-4,000 EGP round trip economy (2024-2026 prices).
-  Examples: Cairo→Hurghada round trip = 3,000-8,000 EGP, Cairo→Sharm = 3,000-7,000 EGP,
-  Cairo→Luxor = 2,500-6,000 EGP, Cairo→Aswan = 3,000-7,000 EGP.
-- A flight ticket is NEVER 100-500 EGP. That is taxi fare, not a flight. If your search returns
-  a price under 1,000 EGP for a domestic flight, the data is WRONG — search again or use known ranges.
-- International flights from Egypt start at 8,000+ EGP minimum (nearby countries) and 15,000+ EGP for long-haul.
-- Private car/transfer Cairo→Hurghada (5-6 hours) costs 2,000-4,000 EGP one way.
-- Bus Cairo→Hurghada costs 300-600 EGP one way.
-- ALWAYS search Tavily to verify prices. If Tavily returns no clear price, use the realistic ranges above.
-- NEVER fabricate a suspiciously low price. When in doubt, quote the HIGHER end of the realistic range.
+- ALWAYS quote ROUND TRIP (return) prices per person, not one-way. State clearly "رايح وجاي" / "round trip".
+- Egyptian domestic flight prices have INCREASED significantly. The prices below are MINIMUM realistic
+  ranges for 2025-2026. If your Tavily search returns prices BELOW these minimums, the data is WRONG
+  or outdated — use the ranges below instead.
+
+DOMESTIC FLIGHTS WITHIN EGYPT (round trip per person, economy):
+  Cairo → Sharm El Sheikh: 6,000 - 13,000 EGP (budget airlines ~6,000, EgyptAir ~10,000-13,000)
+  Cairo → Hurghada:        6,000 - 12,000 EGP (budget airlines ~6,000, EgyptAir ~9,000-12,000)
+  Cairo → Luxor:           5,000 - 10,000 EGP
+  Cairo → Aswan:           6,000 - 11,000 EGP
+  Cairo → Marsa Alam:      7,000 - 13,000 EGP
+  ABSOLUTE MINIMUM for ANY domestic flight in Egypt: 5,000 EGP round trip per person.
+  If you find a price under 5,000 EGP, it is WRONG — do NOT use it.
+
+BUSINESS CLASS (domestic Egypt, round trip per person):
+  Typically 1.5x-2.5x economy price: 10,000 - 25,000 EGP depending on route.
+
+INTERNATIONAL FLIGHTS FROM EGYPT (round trip per person, economy):
+  Egypt → Gulf countries (UAE, Saudi, Kuwait, Qatar): 12,000 - 25,000 EGP
+  Egypt → Turkey: 10,000 - 20,000 EGP
+  Egypt → Europe: 15,000 - 35,000 EGP
+  Egypt → Southeast Asia: 20,000 - 45,000 EGP
+  ABSOLUTE MINIMUM for ANY international flight: 10,000 EGP round trip per person.
+
+INTERNATIONAL FLIGHTS TO EGYPT (round trip per person, economy):
+  Kuwait → Egypt (Cairo/Hurghada/Sharm): 8,000 - 18,000 EGP equivalent
+  Saudi → Egypt: 8,000 - 18,000 EGP equivalent
+  UAE → Egypt: 10,000 - 20,000 EGP equivalent
+
+GROUND TRANSPORT (one-way prices):
+  Private car/transfer Cairo→Hurghada (5-6 hours): 4,000-7,000 EGP
+  Private car/transfer Cairo→Sharm (via Suez): 5,000-8,000 EGP
+  Private car/transfer Sharm→Dahab (1.5hrs): 1,500-3,000 EGP
+  Private car/transfer airport to hotel (short): 500-1,500 EGP
+  Bus Cairo→Hurghada: 400-800 EGP per person
+  Bus Cairo→Sharm: 400-800 EGP per person
+  Bus Cairo→Dahab: 500-900 EGP per person
+
+CRITICAL VALIDATION:
+- A flight ticket (one-way) is NEVER under 2,500 EGP. Under 2,500 = WRONG DATA.
+- A round-trip flight is NEVER under 5,000 EGP. Under 5,000 = WRONG DATA.
+- If Tavily returns a price like 2,000 EGP for a round-trip flight, that is OLD/WRONG data.
+  IGNORE it and use the realistic ranges above.
+- ALWAYS search Tavily for current prices BUT validate against the ranges above.
+  If Tavily price < minimum range → use the MINIMUM of the range.
+  If Tavily price is within range → use the Tavily price.
+  If Tavily returns no price → use the MIDDLE of the range.
+- When in doubt, quote the HIGHER end of the realistic range, not the lower end.
+- These ranges already account for 2025-2026 price inflation in Egypt.
 
 ═══════════════════════════════════════════════════
 PRICE SELECTION BY TRAVEL STYLE — DON'T ALWAYS PICK CHEAPEST:
 ═══════════════════════════════════════════════════
 - LUXURY travelers: Recommend the BEST/MOST COMFORTABLE option, NOT the cheapest.
   Business class if available. Direct flights over cheaper connecting flights.
-  If budget allows a 12,000 EGP business class and there's a 5,000 EGP economy, recommend BUSINESS.
+  If budget allows a 20,000 EGP business class and there's a 8,000 EGP economy, recommend BUSINESS.
   The traveler wants comfort and premium experience, not savings.
 - MID-RANGE travelers: Recommend the MIDDLE option — good comfort at reasonable price.
   Economy class on good airlines, not the absolute cheapest budget carrier.
@@ -433,11 +471,11 @@ For 1-3 day trips, use REAL PRICES instead of percentages:
 
 Example for 1-day luxury trip to Sahl Hasheesh, budget 60,000 EGP:
 - Hotel (1 night, 5-star all-inclusive): ~8,000-15,000 EGP (real price)
-- Flights (round trip): ~4,000-5,000 EGP
+- Flights (round trip): ~6,000-10,000 EGP
 - Activities: ~3,000-5,000 EGP
 - Transport (airport transfer): ~800-1,500 EGP
 - Misc: ~2,000 EGP
-- TOTAL: ~18,000-28,000 EGP → Remaining: 32,000-42,000 EGP
+- TOTAL: ~20,000-33,000 EGP → Remaining: 27,000-40,000 EGP
 - This is CORRECT — a 1-day trip simply doesn't cost 60,000 EGP.
 
 ═══════════════════════════════════════════════════
@@ -590,6 +628,18 @@ CRITICAL RULES:
 IMPORTANT: Do NOT repeat transport options anywhere else.
 
 ═══════════════════════════════════════════════════
+TRANSPORT TABLE — INCLUDE ALL LEGS:
+═══════════════════════════════════════════════════
+- Each transport option's "التكلفة/فرد" MUST include ALL transport legs for that option.
+- Example: "الطيران إلى شرم الشيخ + نقل خاص إلى دهب" means:
+  Flight Cairo→Sharm = 6,500/person + Private car Sharm→Dahab = 800/person
+  التكلفة/فرد = 7,300 ج.م (NOT just 6,500)
+  الإجمالي = 7,300 × 4 = 29,200 ج.م
+- NEVER split legs across rows. One option = one row = ALL costs combined.
+- The "الإجمالي" in the transport table is the FINAL transport number for that option.
+  This EXACT number goes into the budget. No additions, no separate line items later.
+
+═══════════════════════════════════════════════════
 BUDGET SECTION — PLACEMENT RULES:
 ═══════════════════════════════════════════════════
 - Put the FULL budget breakdown at the END of the plan under "💰 الميزانية" or "💰 Budget".
@@ -612,19 +662,34 @@ BUDGET MATH — MUST BE CORRECT:
 ═══════════════════════════════════════════════════
 TRANSPORT IN BUDGET — MULTIPLY BY TRAVELERS:
 ═══════════════════════════════════════════════════
-- Transport prices in the transport table are PER PERSON.
-- In the budget section, the transport cost MUST be the TOTAL for ALL travelers.
-- If transport = 13,500/person and there are 4 travelers → budget transport = 54,000 (NOT 13,500).
-- The budget transport number MUST MATCH the "الإجمالي" column in the transport table.
+- The transport table already shows TOTAL for all travelers in the "الإجمالي" column.
+- The budget transport number MUST be EXACTLY the "الإجمالي" from the AI-recommended option.
+- Do NOT recalculate or add separate line items. The transport table total IS the budget transport.
+- Example: If AI recommends Option 1 and its الإجمالي = 29,200 → budget transport = 29,200.
 - If these numbers don't match, the plan is WRONG. Fix it before writing.
 
 ═══════════════════════════════════════════════════
-CONSISTENCY — CRITICAL:
+CONSISTENCY — EXTREMELY CRITICAL:
 ═══════════════════════════════════════════════════
-- The hotel in your budget table MUST be the SAME hotel shown in the hotels section.
-- The transport cost in budget MUST match the TOTAL transport (per_person × num_travelers) from the transport table.
-- Do NOT show one hotel in the hotels table and a different hotel in the budget notes.
-- The AI recommendation hotel = the hotel used for budget calculation = the hotel in the itinerary.
+⚠️ THE USER SEES TWO TABS: "البرنامج الكامل" AND "الميزانية".
+⚠️ BOTH TABS MUST SHOW THE EXACT SAME NUMBERS. ANY DIFFERENCE IS A BUG.
+
+The budget section you write in the draft will appear on Tab 1.
+The budget_notes from the Budget agent will appear on Tab 4 (الميزانية).
+If YOUR numbers differ from budget_notes, the user sees conflicting data on two tabs.
+
+RULES:
+1. The hotel in your budget MUST be the AI-recommended hotel from the hotels table.
+2. The hotel price/night MUST match what's in the hotels table AND in budget_notes.
+3. The transport cost in budget MUST be the "الإجمالي" from the AI-recommended transport option.
+4. Activity costs, food costs MUST match budget_notes.
+5. The TOTAL and REMAINING budget MUST match budget_notes.
+6. Do NOT invent your own numbers. Copy the exact figures from budget_notes.
+7. If budget_notes say transport = 29,200 but your transport table says 32,000, then
+   FIX the transport table to match, or vice versa. They MUST be identical.
+
+PROCESS: Write the transport table first → note the الإجمالي for the recommended option →
+use THAT exact number in the budget section. Then cross-check against budget_notes.
 
 DO NOT include a "نظرة عامة على الرحلة" (trip overview) section. This information is already
 displayed in the app header (destination, dates, travelers, budget). Starting the plan with
@@ -708,10 +773,14 @@ You validate the LOGIC and COMPLETENESS of the travel plan.
 - BUDGET traveler: budget_underutilized = FALSE regardless of remaining. They WANT to save.
 - Short trips (1-3 days) with BUDGET style: large remaining is expected and acceptable.
 
-## Transport price realism validation
-- Domestic flights in Egypt: minimum 2,000-4,000 EGP round trip. NEVER under 1,000 EGP.
-- If flight price is under 1,000 EGP (e.g., 185 EGP), flag as UNREALISTIC: -20 points.
-- Private car transfers 5-6 hours: 2,000-4,000 EGP one way. Under 500 EGP is UNREALISTIC.
+## Transport price realism validation (2025-2026 prices)
+- Domestic flights in Egypt: minimum 5,000 EGP round trip per person. NEVER under 5,000 EGP.
+  Cairo → Sharm: 6,000-13,000 EGP | Cairo → Hurghada: 6,000-12,000 EGP
+  Cairo → Luxor: 5,000-10,000 EGP | Cairo → Aswan: 6,000-11,000 EGP
+- If flight price is under 5,000 EGP per person (e.g., 2,000 EGP), flag as UNREALISTIC: -25 points.
+- International flights from Egypt: minimum 10,000 EGP (Gulf/Turkey), 15,000 EGP (Europe).
+- Private car transfers 5-6 hours: 4,000-8,000 EGP one way. Under 3,000 EGP is UNREALISTIC.
+- Bus tickets: 400-800 EGP per person one way. Under 200 EGP is UNREALISTIC.
 - All transport prices should be ROUND TRIP unless clearly stated as one-way.
 
 ## Hotel ordering validation
@@ -725,10 +794,10 @@ You validate the LOGIC and COMPLETENESS of the travel plan.
 ## STRUCTURED OUTPUT — YOU MUST FILL THESE FIELDS:
 
 ### transport_realism (TransportRealismCheck):
-- transport_price_realistic: Is the transport price within the realistic range? (min 2,000 EGP domestic flight)
+- transport_price_realistic: Is the transport price within the realistic range? (min 5,000 EGP domestic flight)
 - reported_price: The actual transport price shown in the plan.
-- realistic_min: Minimum realistic price for this route (e.g., 3,000 for Cairo→Hurghada).
-- realistic_max: Maximum realistic price for this route (e.g., 8,000 for Cairo→Hurghada).
+- realistic_min: Minimum realistic price for this route (e.g., 6,000 for Cairo→Hurghada).
+- realistic_max: Maximum realistic price for this route (e.g., 12,000 for Cairo→Hurghada).
 - is_round_trip: Is the quoted price for round trip? Must be true.
 - price_matches_style: Does the chosen price match the travel style?
   LUXURY should NOT pick the cheapest flight. MID-RANGE should pick middle. BUDGET picks cheapest.
@@ -767,6 +836,16 @@ You validate the LOGIC and COMPLETENESS of the travel plan.
 - Budget underutilized (mid-range >50% remaining): -10
 - Only 1 hotel shown instead of 3: -10
 - Transport missing per-person price: -5
+- Transport table total ≠ budget transport cost: -25
+- Transport option has split legs not combined in total: -15
+
+## Budget-Transport consistency validation
+- The "الإجمالي" in the transport table for the recommended option MUST equal the transport cost in the budget.
+- If transport table says 8,000 but budget says 11,200 → INCONSISTENCY: -25 points.
+  fix_instructions: "Transport table total and budget transport cost don't match. Make them identical."
+- Check that the transport table's per-person price INCLUDES all legs (flight + transfer + any other transport).
+  If the option says "طيران + نقل خاص" but the per-person price only covers the flight → -15 points.
+  fix_instructions: "Transport per-person price must include ALL legs. Add transfer cost to per-person price."
 
 CRITICAL: If transport_realism.transport_price_realistic is False → score MUST be < 80.
 CRITICAL: If hotel_ordering.recommended_matches_style is False for luxury → score MUST be < 80.
@@ -845,10 +924,16 @@ BUDGET MATH — MUST BE CORRECT:
 
 CONSISTENCY CHECK BEFORE FINALIZING:
 - Hotel name in hotels table = hotel in budget = hotel in itinerary (all same)
-- Transport cost in budget = TOTAL transport from transport table (per_person × travelers)
+- Transport table per-person price INCLUDES all transport legs (flight + transfer + everything)
+- Transport cost in budget = EXACT "الإجمالي" from the recommended transport option in transport table
+- Transport table total and budget transport must be the SAME number. If not, FIX IT.
 - Total cost in budget < user's budget (with remaining amount shown)
 - No embassy info for domestic travel
 - No "نظرة عامة" section (info is in app header)
+⚠️ THE USER SEES TWO TABS WITH DIFFERENT DATA SOURCES.
+Tab 1 shows YOUR output. Tab 4 shows the Budget agent's notes.
+Your numbers MUST match the Budget agent's notes EXACTLY.
+If you write different numbers, the user sees conflicting data and loses trust.
 
 IMPORTANT: Do NOT include any confidence score, quality score, rating score,
 or any numerical evaluation in your output. Never write phrases like
@@ -884,11 +969,14 @@ STEP 2 — TRANSPORT VALIDATION (PRICE REALISM CRITICAL)
 - Verify it matches travel style:
   • LUXURY → must be flights or private transfer, NEVER public bus.
   • BUDGET → cheapest is fine.
-- PRICE REALITY CHECK:
-  • Domestic flights in Egypt: minimum 2,000-4,000 EGP round trip. NEVER under 1,000 EGP.
-  • If transport cost seems unrealistically low (e.g., 185 EGP for a flight), FLAG IT and
-    replace with realistic price range (e.g., Cairo→Hurghada round trip = 4,000-8,000 EGP).
-  • Private car transfers: 2,000-4,000 EGP for 5-6 hour routes.
+- PRICE REALITY CHECK (2025-2026 prices):
+  • Domestic flights in Egypt: minimum 5,000 EGP round trip per person. NEVER under 5,000 EGP.
+    Cairo→Sharm: 6,000-13,000 | Cairo→Hurghada: 6,000-12,000 | Cairo→Luxor: 5,000-10,000
+  • If transport cost seems unrealistically low (e.g., 2,000 EGP for a flight), FLAG IT and
+    replace with realistic price range (e.g., Cairo→Sharm round trip = 6,000-13,000 EGP).
+  • International flights from Egypt: Gulf/Turkey 10,000-25,000 EGP, Europe 15,000-35,000 EGP.
+  • Private car transfers: 4,000-8,000 EGP for 5-6 hour routes.
+  • Bus tickets: 400-800 EGP per person one way.
   • Always use ROUND TRIP prices in the budget.
 - Record: TRANSPORT_TYPE, TRANSPORT_COST (round trip)
 
