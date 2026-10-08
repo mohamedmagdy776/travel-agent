@@ -162,6 +162,7 @@ class GraphState(TypedDict):
     max_iterations: int
     user_budget: Optional[float]              # ← CODE-LEVEL: exact budget from form
     num_travelers: int                        # ← CODE-LEVEL: exact travelers from form
+    user_currency: Optional[str]              # ← CODE-LEVEL: currency CODE from form (USD/EGP/…)
 
 
 # ─────────────────────────────────────────────
@@ -1302,6 +1303,74 @@ def _extract_numbers_from_text(text: str) -> List[float]:
     return numbers
 
 
+# Map a currency CODE (as chosen in the form) to its display symbol.
+CURRENCY_SYMBOLS = {
+    'EGP': 'ج.م', 'USD': '$', 'EUR': '€', 'GBP': '£',
+    'SAR': 'ر.س', 'AED': 'د.إ', 'JPY': '¥', 'TRY': '₺',
+    'KWD': 'د.ك', 'QAR': 'ر.ق', 'OMR': 'ر.ع', 'BHD': 'د.ب',
+}
+
+
+def _currency_from_question(question: str):
+    """Read the user's chosen currency from the request text.
+    The frontend always writes a 'Preferred currency: XXX' line. Returns (code, symbol).
+    Falls back to USD/$ when nothing is found — NOT to EGP, which was the old mislabel bug."""
+    code = None
+    if question:
+        m = re.search(r'Preferred\s*currency\s*[:\-]?\s*([A-Za-z]{3})', question, re.IGNORECASE)
+        if not m:
+            m = re.search(r'(?:Total\s*budget|budget)\s*[:\-]?\s*[\d,]+\s*([A-Za-z]{3})', question, re.IGNORECASE)
+        if m:
+            code = m.group(1).upper()
+    if code not in CURRENCY_SYMBOLS:
+        # also accept a literal symbol appearing in the question
+        for c, sym in CURRENCY_SYMBOLS.items():
+            if sym in (question or '') and sym not in ('$',):  # '$' is too ambiguous to trust alone
+                code = c
+                break
+    if code not in CURRENCY_SYMBOLS:
+        code = 'USD'
+    return code, CURRENCY_SYMBOLS[code]
+
+
+# Every currency token we might need to rewrite away from. Longer tokens first so
+# multi-char tokens (e.g. "ج.م") match before single chars.
+_ALL_CUR_TOKENS = ['ج.م', 'ر.س', 'د.إ', 'د.ك', 'ر.ق', 'ر.ع', 'د.ب',
+                   'EGP', 'USD', 'EUR', 'GBP', 'SAR', 'AED', 'JPY', 'TRY',
+                   'KWD', 'QAR', 'OMR', 'BHD', '€', '£', '₺', '¥', '$']
+
+
+def _normalize_currency_in_text(text: str, target_sym: str) -> str:
+    """Rewrite every money amount in `text` into the user's chosen currency symbol.
+
+    SAFE because all numbers in the plan are computed against the budget, which is ALWAYS in
+    the user's chosen currency — so a wrong symbol is a MISLABEL on a correct-magnitude number,
+    not a value in another currency. We fix the symbol, we do NOT convert the number.
+    (e.g. a USD trip that printed "540 ج.م" for a hotel really means "$540".)
+    """
+    if not text or not target_sym:
+        return text
+    others = [t for t in _ALL_CUR_TOKENS if t != target_sym]
+    # also don't rewrite the code that maps to the same symbol (e.g. target '$' keeps 'USD')
+    same_code = {sym: code for code, sym in CURRENCY_SYMBOLS.items()}.get(target_sym)
+    if same_code:
+        others = [t for t in others if t != same_code]
+    alt = '|'.join(re.escape(t) for t in sorted(others, key=len, reverse=True))
+    if not alt:
+        return text
+
+    def fmt(num):
+        return f"{target_sym}{num}" if target_sym in ('$', '€', '£') else f"{num} {target_sym}"
+
+    # amount THEN token:  "540 ج.م" / "540ج.م" / "2,100 EGP"
+    text = re.sub(rf'([\d,]+(?:\.\d+)?)\s*(?:{alt})', lambda m: fmt(m.group(1)), text)
+    # token THEN amount:  "$540" / "ج.م 540"
+    text = re.sub(rf'(?:{alt})\s*([\d,]+(?:\.\d+)?)', lambda m: fmt(m.group(1)), text)
+    # bare leftover tokens with no adjacent number → just the target symbol
+    text = re.sub(rf'(?:{alt})', target_sym, text)
+    return text
+
+
 def _extract_total_from_draft(draft: str, user_budget: float) -> dict:
     """
     CODE-LEVEL budget extraction from the draft text.
@@ -1806,6 +1875,11 @@ def _replace_budget_section(resp: str, new_section: str) -> str:
 # ─────────────────────────────────────────────
 
 def planner_node(state: GraphState) -> GraphState:
+    # Capture the user's chosen currency up front so every node renders prices in it.
+    code, _sym = _currency_from_question(state.get("question", ""))
+    state["user_currency"] = code
+    print(f"[CODE-LEVEL] User currency: {code} ({_sym})")
+
     structured_planner = llm.with_structured_output(TravelPlan)
     plan_obj = structured_planner.invoke([
         SystemMessage(content=PLANNER_SYSTEM),
@@ -2202,6 +2276,8 @@ def writer_node(state: GraphState) -> GraphState:
 
     user_budget = state.get('user_budget') or 0
     num_travelers = state.get('num_travelers', 1)
+    cur_code, cur_sym = _currency_from_question(state.get('question', '')) \
+        if not state.get('user_currency') else (state['user_currency'], CURRENCY_SYMBOLS.get(state['user_currency'], '$'))
     max_transport = int(user_budget * 0.35) if user_budget else 0
     max_hotel = int(user_budget * 0.45) if user_budget else 0
     # num_days = nights booked (check-out = arrival + num_days).
@@ -2211,6 +2287,16 @@ def writer_node(state: GraphState) -> GraphState:
     num_days_for_hotel = num_nights
     max_hotel_per_night = int(max_hotel / num_days_for_hotel) if max_hotel else 0
     max_transport_per_person = int(max_transport / max(num_travelers, 1)) if max_transport else 0
+
+    currency_directive = (
+        f"\n╔══════════════════════════════════════════════════════════════╗\n"
+        f"║  CURRENCY — MANDATORY: use {cur_code} ({cur_sym}) for EVERY price ║\n"
+        f"╚══════════════════════════════════════════════════════════════╝\n"
+        f"The traveler chose {cur_code}. EVERY number (flights, hotels, activities, dining, totals) MUST be in "
+        f"{cur_code} and shown with the symbol '{cur_sym}'. The budget {int(user_budget):,} is in {cur_code}.\n"
+        f"⚠️ Any 'ج.م' you see in the format templates is only a PLACEHOLDER — replace it with '{cur_sym}'. "
+        f"Do NOT output 'ج.م' unless {cur_code} is EGP. Never mix currencies.\n"
+    )
 
     # ══════════════════════════════════════════════════════════════
     # CODE-LEVEL FILTER: Remove over-budget options BEFORE the LLM sees them.
@@ -2249,11 +2335,11 @@ HOTEL NIGHTS: {num_nights} (guest sleeps {num_nights} nights, checks out on day 
 Do NOT cram check-out into the last full day — the check-out day is its own separate day.
 TRAVEL STYLE: {travel_style} — ALL recommendations must match this style.
 ══════════════════════════════════
-
+{currency_directive}
 ╔══════════════════════════════════════════════════════════════╗
 ║  BUDGET HARD LIMITS — YOUR PLAN WILL BE REJECTED IF EXCEEDED ║
 ╚══════════════════════════════════════════════════════════════╝
-TOTAL BUDGET: {int(user_budget):,} (ABSOLUTE MAXIMUM — plan total MUST be LESS)
+TOTAL BUDGET: {int(user_budget):,} {cur_sym} (ABSOLUTE MAXIMUM — plan total MUST be LESS)
 Number of travelers: {num_travelers}
 MAX transport (35%): {max_transport:,} (for ALL {num_travelers} travelers combined)
 MAX per person transport: {max_transport_per_person:,}
@@ -2366,6 +2452,20 @@ def finalizer_node(state: GraphState) -> GraphState:
     num_nights = max(num_days, 1)
     itinerary_days = num_nights + 1
     max_hotel_per_night = int(max_hotel / num_nights) if max_hotel else 0
+    max_transport_per_person = int(max_transport / max(num_travelers, 1)) if max_transport else 0
+
+    # ── user's chosen currency (code + symbol) — used everywhere below ──
+    cur_code, cur_sym = (state['user_currency'], CURRENCY_SYMBOLS.get(state['user_currency'], '$')) \
+        if state.get('user_currency') else _currency_from_question(state.get('question', ''))
+    currency_directive = (
+        f"\n╔══════════════════════════════════════════════════════════════╗\n"
+        f"║  CURRENCY — MANDATORY: use {cur_code} ({cur_sym}) for EVERY price ║\n"
+        f"╚══════════════════════════════════════════════════════════════╝\n"
+        f"The traveler chose {cur_code}. EVERY number MUST be in {cur_code} with the symbol '{cur_sym}'. "
+        f"The budget {int(user_budget):,} is in {cur_code}.\n"
+        f"⚠️ Any 'ج.م' in the format templates is only a PLACEHOLDER — replace it with '{cur_sym}'. "
+        f"Do NOT output 'ج.م' unless {cur_code} is EGP. Never mix currencies.\n"
+    )
 
     # ← ORCHESTRATOR PATTERN: Finalizer uses coordinator_brief as PRIMARY source
     coordinator_brief = state.get('coordinator_brief', '')
@@ -2445,9 +2545,9 @@ ITINERARY DAYS: {itinerary_days} — write EXACTLY {itinerary_days} dated days. 
 HOTEL NIGHTS: {num_nights} (checks out on day {itinerary_days}). The check-out day is a separate day — do NOT merge it into the last full day.
 TRAVEL STYLE: {travel_style} — every recommendation must match this style.
 ══════════════════════════════════
-
+{currency_directive}
 ╔══════════════════════════════════════════════════════════════╗
-║  BUDGET HARD LIMIT — TOTAL MUST BE LESS THAN {int(user_budget):,}        ║
+║  BUDGET HARD LIMIT — TOTAL MUST BE LESS THAN {int(user_budget):,} {cur_sym}       ║
 ║  Number of travelers: {num_travelers}                                    ║
 ║  Transport max (35%): {max_transport:,} (ALL travelers combined)         ║
 ║  Transport max per person: {int(max_transport / max(num_travelers, 1)):,}║
@@ -2527,12 +2627,8 @@ Draft to fix:
         # ══════════════════════════════════════════════════════════════
         final_final = _extract_total_from_draft(resp, user_budget)
         if final_final["is_over_budget"]:
-            # Determine currency symbol used in draft
-            cur = "$"
-            for sym in ['ج.م', 'EGP', 'AED', 'د.إ', 'USD', 'SAR', 'ر.س', 'EUR', '€', '£']:
-                if sym in resp:
-                    cur = sym
-                    break
+            # Use the user's CHOSEN currency symbol (not whatever the draft happened to print).
+            cur = cur_sym
 
             # cheapest flight (the lever we cut) for the locked LLM pass
             cheap_fp, _ = _cheapest_unit_price(state.get('flight_notes', []), "transport")
@@ -2641,16 +2737,25 @@ Draft to enrich:
                 else:
                     print(f"[CODE-LEVEL] Fill pass didn't improve — keeping original")
 
+    # ══════════════════════════════════════════════════════════════
+    # CURRENCY NORMALIZATION — HARD GUARANTEE: force the whole output into the
+    # user's chosen currency symbol. Fixes the "USD trip printed in ج.م" bug
+    # regardless of what the LLM/templates produced. Numbers stay; symbol is fixed.
+    # ══════════════════════════════════════════════════════════════
+    resp = _normalize_currency_in_text(resp, cur_sym)
+    for key in ('flight_notes', 'hotel_notes', 'activities_notes', 'places_notes'):
+        notes = state.get(key)
+        if notes:
+            state[key] = [_normalize_currency_in_text(n, cur_sym) for n in notes]
+    print(f"[CODE-LEVEL] Currency normalized to {cur_code} ({cur_sym})")
+
     state["draft"] = resp
 
     # ══════════════════════════════════════════════════════════════
-    # SYNC budget_notes FROM the final draft — so tab4 matches tab1
+    # SYNC budget_notes FROM the final draft — so tab4 matches tab1.
+    # Use the USER'S chosen currency symbol, never a guessed default.
     # ══════════════════════════════════════════════════════════════
-    currency = "ج.م"  # default
-    for sym in ['ج.م', 'EGP', 'AED', 'د.إ', 'USD', '$', 'SAR', 'ر.س', 'EUR', '€', 'GBP', '£']:
-        if sym in resp:
-            currency = sym
-            break
+    currency = cur_sym
 
     synced_notes = _generate_budget_notes_from_draft(resp, user_budget, currency)
     if synced_notes:
