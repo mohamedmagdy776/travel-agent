@@ -2263,9 +2263,10 @@ The current plan exceeds the budget by {overage:,} {cur} (Total: {est_total:,} {
         # Triggers even for small leftovers (e.g. 3-4% of a large budget) on
         # trips of 3+ nights — one more nice dinner/excursion is worth adding.
         # ══════════════════════════════════════════════════════════════
-        final_util = _extract_total_from_draft(resp, user_budget)
-        if not final_util["is_over_budget"] and final_util.get("estimated_total", 0) > 0:
-            est = final_util["estimated_total"]
+        final_util = _extract_total_from_draft(resp, user_budget) or {}
+        est_val = final_util.get("estimated_total") or 0
+        if not final_util.get("is_over_budget") and est_val > 0:
+            est = est_val
             rem = user_budget - est
             rem_pct = (rem / user_budget) * 100
             style_lower = travel_style.lower()
