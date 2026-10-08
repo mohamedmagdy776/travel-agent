@@ -1177,42 +1177,49 @@ def _extract_total_from_draft(draft: str, user_budget: float) -> dict:
 
     total = None
 
-    # ── Pattern 1: Arabic total patterns ──
-    # "الإجمالي الكلي: 108,000" or "الإجمالي الكلي = 108,000"
-    arabic_total_patterns = [
-        r'الإجمالي\s*الكلي[:\s=]+\s*([\d,]+)',
-        r'إجمالي\s*التكاليف[:\s=]+\s*([\d,]+)',
-        r'المجموع\s*الكلي[:\s=]+\s*([\d,]+)',
-        r'Total\s*Cost[:\s=]+\s*([\d,]+)',
+    # ── Pattern 1: Direct total patterns (Arabic + English) ──
+    # Handles: "الإجمالي الكلي: 108,000", "Total Cost: $6,474", "TOTAL | $6,474"
+    total_patterns = [
+        # Arabic patterns — number after label
+        r'الإجمالي\s*الكلي[:\s=]+\s*\$?([\d,]+)',
+        r'إجمالي\s*التكاليف[:\s=]+\s*\$?([\d,]+)',
+        r'المجموع\s*الكلي[:\s=]+\s*\$?([\d,]+)',
+        # Arabic with currency suffix
         r'الإجمالي[:\s=]+\s*([\d,]+(?:\.\d+)?)\s*(?:ج\.م|EGP|AED|USD|SAR|EUR|GBP|د\.إ|ر\.س)',
+        # English patterns — "Total Cost: $6,474" or "Total: $6,474"
+        r'Total\s*Cost[:\s=]+\s*\$?([\d,]+)',
+        r'(?<!\w)TOTAL[:\s=]+\s*\$?([\d,]+)',
+        # $ prefix patterns — "$6,474" after total/TOTAL label
+        r'Total[:\s=]+\s*\$([\d,]+(?:\.\d+)?)',
     ]
 
-    for pattern in arabic_total_patterns:
+    for pattern in total_patterns:
         match = re.search(pattern, draft, re.IGNORECASE)
         if match:
             try:
                 val = float(match.group(1).replace(',', ''))
-                # Sanity: total should be > 1000 (not a percentage or day count)
-                if val > 1000:
+                if val > 500:  # lowered from 1000 for USD amounts
                     total = val
                     break
             except ValueError:
                 pass
 
-    # ── Pattern 2: Look in budget table (HTML or markdown) ──
+    # ── Pattern 2: Look in budget table (HTML or markdown pipe table) ──
     if total is None:
-        # HTML table: look for row with "الإجمالي" and a number
         table_patterns = [
-            r'الإجمالي\s*الكلي.*?<td[^>]*>\s*([\d,]+)',
-            r'Total.*?<td[^>]*>\s*([\d,]+)',
-            r'\|\s*الإجمالي\s*الكلي\s*\|\s*([\d,]+)',
+            # HTML table: <td> after TOTAL/الإجمالي row
+            r'الإجمالي\s*الكلي.*?<td[^>]*>\s*\$?([\d,]+)',
+            r'(?:\*\*)?TOTAL(?:\*\*)?.*?<td[^>]*>\s*(?:\*\*)?\$?([\d,]+)',
+            r'Total.*?<td[^>]*>\s*\$?([\d,]+)',
+            # Markdown pipe table: | TOTAL | $6,474 | or | **TOTAL** | **$6,474** |
+            r'\|\s*(?:\*\*)?(?:TOTAL|الإجمالي\s*الكلي|إجمالي)(?:\*\*)?\s*\|\s*(?:\*\*)?\$?([\d,]+)',
         ]
         for pattern in table_patterns:
             match = re.search(pattern, draft, re.IGNORECASE | re.DOTALL)
             if match:
                 try:
                     val = float(match.group(1).replace(',', ''))
-                    if val > 1000:
+                    if val > 500:
                         total = val
                         break
                 except ValueError:
@@ -1224,17 +1231,35 @@ def _extract_total_from_draft(draft: str, user_budget: float) -> dict:
         hotel_total = None
         activities_total = None
 
-        for pattern in [r'إجمالي\s*(?:تكلفة\s*)?النقل[:\s=]+\s*([\d,]+)', r'transport[:\s=]+\s*([\d,]+)']:
+        for pattern in [
+            r'إجمالي\s*(?:تكلفة\s*)?النقل[:\s=]+\s*\$?([\d,]+)',
+            r'[Tt]ransport[:\s=]+\s*\$?([\d,]+)',
+            r'\|\s*Transport\b.*?\|\s*\$?([\d,]+)',
+        ]:
             m = re.search(pattern, draft, re.IGNORECASE)
             if m:
                 try: transport_total = float(m.group(1).replace(',', ''))
                 except: pass
                 break
 
-        for pattern in [r'إجمالي\s*(?:تكلفة\s*)?الفناد[قك][:\s=]+\s*([\d,]+)', r'hotel[:\s]*total[:\s=]+\s*([\d,]+)']:
+        for pattern in [
+            r'إجمالي\s*(?:تكلفة\s*)?الفناد[قك][:\s=]+\s*\$?([\d,]+)',
+            r'[Hh]otel[:\s]*(?:total)?[:\s=]+\s*\$?([\d,]+)',
+            r'\|\s*Hotel\b.*?\|\s*\$?([\d,]+)',
+        ]:
             m = re.search(pattern, draft, re.IGNORECASE)
             if m:
                 try: hotel_total = float(m.group(1).replace(',', ''))
+                except: pass
+                break
+
+        for pattern in [
+            r'[Aa]ctivities[:\s=]+\s*\$?([\d,]+)',
+            r'\|\s*Activities\b.*?\|\s*\$?([\d,]+)',
+        ]:
+            m = re.search(pattern, draft, re.IGNORECASE)
+            if m:
+                try: activities_total = float(m.group(1).replace(',', ''))
                 except: pass
                 break
 
@@ -1246,6 +1271,60 @@ def _extract_total_from_draft(draft: str, user_budget: float) -> dict:
     overage = (total - user_budget) if is_over and total else 0
 
     return {"estimated_total": total, "is_over_budget": is_over, "overage": overage}
+
+
+def _filter_over_budget_options(notes: List[str], max_price: float, category: str) -> List[str]:
+    """
+    CODE-LEVEL: Remove or annotate options from research notes that exceed the budget limit.
+    This ensures the LLM never sees over-budget options, so it CAN'T pick them.
+
+    Args:
+        notes: List of research note strings (from flight_notes, hotel_notes, etc.)
+        max_price: Maximum allowed price per unit (per person for flights, per night for hotels)
+        category: "transport" or "hotel" — determines what patterns to look for
+    Returns:
+        Filtered notes with over-budget options removed or replaced with warnings
+    """
+    if not notes or not max_price or max_price <= 0:
+        return notes
+
+    filtered = []
+    for note in notes:
+        # Extract all prices from the note
+        prices = re.findall(r'(?:\$|USD\s*|EGP\s*|ج\.م\s*|AED\s*|د\.إ\s*|SAR\s*|ر\.س\s*|EUR\s*|€\s*|£\s*)([\d,]+(?:\.\d+)?)|(\d[\d,]+(?:\.\d+)?)\s*(?:\$|USD|EGP|ج\.م|AED|د\.إ|SAR|ر\.س|EUR|€|£)', note, re.IGNORECASE)
+
+        has_over_budget = False
+        for price_groups in prices:
+            price_str = price_groups[0] or price_groups[1]
+            if price_str:
+                try:
+                    price_val = float(price_str.replace(',', ''))
+                    # Only flag prices that are clearly per-unit (not too small)
+                    if price_val > 100 and price_val > max_price * 1.1:
+                        has_over_budget = True
+                        break
+                except ValueError:
+                    pass
+
+        if has_over_budget:
+            # Check if this is business/first class (for transport) or luxury hotel
+            is_premium = any(kw in note.lower() for kw in [
+                'business', 'first class', 'بيزنس', 'درجة أولى', 'first',
+                'suite', 'سويت', 'presidential', 'رئاسي', 'villa', 'فيلا'
+            ])
+            if is_premium:
+                # Replace with warning — don't include the option at all
+                filtered.append(
+                    f"⛔ [REMOVED - OVER BUDGET] An option was removed because it exceeds "
+                    f"the max {category} budget of {int(max_price):,}. Only options within budget are shown."
+                )
+            else:
+                # Non-premium but expensive — keep but annotate
+                filtered.append(f"⚠️ [WARNING: EXCEEDS BUDGET LIMIT OF {int(max_price):,}] {note}")
+        else:
+            filtered.append(note)
+
+    return filtered
 
 
 def _generate_budget_notes_from_draft(draft: str, user_budget: float, currency: str) -> List[str]:
@@ -1591,41 +1670,23 @@ def writer_node(state: GraphState) -> GraphState:
     max_hotel = int(user_budget * 0.45) if user_budget else 0
     num_days_for_hotel = max(num_days - 1, 1)  # nights = days - 1
     max_hotel_per_night = int(max_hotel / num_days_for_hotel) if max_hotel else 0
+    max_transport_per_person = int(max_transport / max(num_travelers, 1)) if max_transport else 0
 
     # ══════════════════════════════════════════════════════════════
-    # CODE-LEVEL: Scan flight_notes for over-budget options and BLOCK them
+    # CODE-LEVEL FILTER: Remove over-budget options BEFORE the LLM sees them.
+    # If the LLM never sees a $1000/night hotel, it CAN'T pick it.
     # ══════════════════════════════════════════════════════════════
-    budget_warnings = []
-    if user_budget and max_transport:
-        flight_text = ' '.join(state.get('flight_notes', []))
-        coord_text = state.get('coordinator_brief', '') or ''
-        combined_text = flight_text + ' ' + coord_text
-
-        # Find any mention of business/first class with prices
-        for cls_name in ['business', 'بيزنس', 'Business Class', 'first class', 'درجة أولى', 'First Class']:
-            if cls_name.lower() in combined_text.lower():
-                # Try to find associated price
-                prices_nearby = re.findall(r'(\d[\d,]*)\s*(?:ج\.م|EGP|AED|USD|SAR|EUR|د\.إ|ر\.س)', combined_text)
-                for p in prices_nearby:
-                    try:
-                        price_val = float(p.replace(',', ''))
-                        total_for_all = price_val * num_travelers
-                        if total_for_all > max_transport and price_val > 5000:
-                            budget_warnings.append(
-                                f"⛔ BLOCKED: {cls_name} at {int(price_val):,}/person × {num_travelers} = {int(total_for_all):,} "
-                                f"EXCEEDS transport limit of {max_transport:,}. USE ECONOMY CLASS INSTEAD."
-                            )
-                    except ValueError:
-                        pass
-
-    budget_block_text = ""
-    if budget_warnings:
-        budget_block_text = "\n╔══════════════════════════════════════════════════╗\n"
-        budget_block_text += "║  ⛔ BLOCKED TRANSPORT OPTIONS — DO NOT USE THESE  ║\n"
-        budget_block_text += "╚══════════════════════════════════════════════════╝\n"
-        budget_block_text += "\n".join(budget_warnings)
-        budget_block_text += "\n\nYou MUST recommend ECONOMY class instead. DO NOT mention business/first class as the AI recommendation.\n"
-        print(f"[CODE-LEVEL] Budget warnings generated: {budget_warnings}")
+    flight_notes = state.get('flight_notes', [])
+    hotel_notes = state.get('hotel_notes', [])
+    if user_budget:
+        flight_notes = _filter_over_budget_options(
+            flight_notes, max_transport_per_person, "transport"
+        )
+        hotel_notes = _filter_over_budget_options(
+            hotel_notes, max_hotel_per_night, "hotel"
+        )
+        print(f"[CODE-LEVEL] Filtered research: {len(state.get('flight_notes',[]))} flight notes → {len(flight_notes)}, "
+              f"{len(state.get('hotel_notes',[]))} hotel notes → {len(hotel_notes)}")
 
     resp = llm.invoke([
         SystemMessage(content=WRITER_SYSTEM),
@@ -1642,15 +1703,12 @@ TRAVEL STYLE: {travel_style} — ALL recommendations must match this style.
 TOTAL BUDGET: {int(user_budget):,} (ABSOLUTE MAXIMUM — plan total MUST be LESS)
 Number of travelers: {num_travelers}
 MAX transport (35%): {max_transport:,} (for ALL {num_travelers} travelers combined)
-MAX per person transport: {int(max_transport / max(num_travelers, 1)):,}
+MAX per person transport: {max_transport_per_person:,}
 MAX hotel total (45%): {max_hotel:,} (for ALL {num_days_for_hotel} nights combined)
 MAX hotel per night: {max_hotel_per_night:,}
 
-⚠️ MATH CHECK BEFORE WRITING:
-Transport (per person × {num_travelers}) + Hotel ({max_hotel_per_night:,}/night × {num_days_for_hotel} nights) + Activities MUST < {int(user_budget):,}
-If business class × {num_travelers} > {max_transport:,} → USE ECONOMY CLASS.
-If hotel/night > {max_hotel_per_night:,} → pick a cheaper hotel.
-{budget_block_text}
+⚠️ CRITICAL: Pick options WITHIN these limits. Over-budget options have been REMOVED from research below.
+If ALL options exceed the budget, recommend the CHEAPEST available option (economy class, budget hotel).
 
 Plan: {json.dumps(state['plan'], indent=2)}
 Output headings: {headings}
@@ -1663,13 +1721,14 @@ Output headings: {headings}
 
 {coordinator_brief}
 
-═══ RAW RESEARCH NOTES (for additional detail only) ═══
+═══ BUDGET-FILTERED RESEARCH NOTES ═══
+(Over-budget options have been removed by the system)
 
 Flight Research:
-{chr(10).join('- ' + n for n in state.get('flight_notes', []))}
+{chr(10).join('- ' + n for n in flight_notes)}
 
 Hotel Research:
-{chr(10).join('- ' + n for n in state.get('hotel_notes', []))}
+{chr(10).join('- ' + n for n in hotel_notes)}
 
 Visa Research:
 {chr(10).join('- ' + n for n in state.get('visa_notes', []))}
@@ -1808,9 +1867,9 @@ Plan: {json.dumps(state['plan'], indent=2)}
 
 {coordinator_brief}
 
-═══ RAW RESEARCH (for additional detail only) ═══
-Flights: {chr(10).join('- ' + n for n in state.get('flight_notes', []))}
-Hotels: {chr(10).join('- ' + n for n in state.get('hotel_notes', []))}
+═══ BUDGET-FILTERED RESEARCH (over-budget options removed) ═══
+Flights: {chr(10).join('- ' + n for n in _filter_over_budget_options(state.get('flight_notes', []), int(max_transport / max(num_travelers, 1)) if max_transport else 0, "transport"))}
+Hotels: {chr(10).join('- ' + n for n in _filter_over_budget_options(state.get('hotel_notes', []), max_hotel_per_night, "hotel"))}
 Visa: {chr(10).join('- ' + n for n in state.get('visa_notes', []))}
 Weather: {chr(10).join('- ' + n for n in state.get('weather_notes', []))}
 Activities: {chr(10).join('- ' + n for n in state.get('activities_notes', []))}
@@ -1856,6 +1915,37 @@ Draft to fix:
                 print(f"[CODE-LEVEL] Second pass improved budget: {int(check2['estimated_total']):,} vs {int(final_check['estimated_total']):,}")
             else:
                 print(f"[CODE-LEVEL] Second pass didn't improve — keeping first version")
+
+        # ══════════════════════════════════════════════════════════════
+        # LAST RESORT: If STILL over budget after 2 LLM passes, do a
+        # mathematical correction — append a budget warning to the draft
+        # ══════════════════════════════════════════════════════════════
+        final_final = _extract_total_from_draft(resp, user_budget)
+        if final_final["is_over_budget"]:
+            overage = int(final_final["overage"])
+            est_total = int(final_final["estimated_total"])
+            # Determine currency symbol used in draft
+            cur = "$"
+            for sym in ['ج.م', 'EGP', 'AED', 'د.إ', 'USD', 'SAR', 'ر.س', 'EUR', '€', '£']:
+                if sym in resp:
+                    cur = sym
+                    break
+
+            budget_warning = f"""
+
+---
+
+⚠️ **تنبيه الميزانية / Budget Notice:**
+الخطة الحالية تتجاوز الميزانية بمبلغ {overage:,} {cur} (الإجمالي: {est_total:,} {cur} vs الميزانية: {int(user_budget):,} {cur}).
+The current plan exceeds the budget by {overage:,} {cur} (Total: {est_total:,} {cur} vs Budget: {int(user_budget):,} {cur}).
+
+**للالتزام بالميزانية / To stay within budget:**
+- اختر درجة اقتصادية للطيران (حد أقصى: {max_transport_per_person:,} {cur}/شخص) / Choose economy class flights (max: {max_transport_per_person:,} {cur}/person)
+- اختر فندق أرخص (حد أقصى: {max_hotel_per_night:,} {cur}/ليلة) / Choose a cheaper hotel (max: {max_hotel_per_night:,} {cur}/night)
+- قلل تكاليف الأنشطة / Reduce activities costs
+"""
+            resp += budget_warning
+            print(f"[CODE-LEVEL] LAST RESORT: Appended budget warning to draft (over by {overage:,})")
 
     state["draft"] = resp
 
