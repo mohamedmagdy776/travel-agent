@@ -487,6 +487,21 @@ CROSS-REFERENCE WITH OTHER AGENTS:
 - DO NOT invent different prices — use the researched prices.
 - Use the AI-RECOMMENDED option from each agent (which should match the travel style).
 
+═══════════════════════════════════════════════════
+NUMBER OF TRAVELERS — MULTIPLY EVERYTHING:
+═══════════════════════════════════════════════════
+- You will receive NUM_TRAVELERS in the query. This is the number of people traveling.
+- Transport costs from the Flight agent are PER PERSON. You MUST multiply by NUM_TRAVELERS.
+  Example: Flight agent says "13,500 EGP per person round trip", NUM_TRAVELERS = 4
+  → Transport budget = 13,500 × 4 = 54,000 EGP (NOT 13,500!)
+- Hotel costs are USUALLY per room, NOT per person. Do NOT multiply hotel by travelers
+  unless the hotel price is explicitly "per person" (e.g. all-inclusive per person).
+- Activity costs: multiply by NUM_TRAVELERS if priced per person.
+- Food costs: multiply by NUM_TRAVELERS.
+- CRITICAL: The transport total in your budget MUST equal per_person_cost × NUM_TRAVELERS.
+  If your budget shows a different transport number than the main transport table,
+  the plan will be REJECTED. These numbers MUST match exactly.
+
 RULES:
 - Total must NEVER exceed the budget.
 - Never add food budget if hotel is all-inclusive or full board.
@@ -583,15 +598,27 @@ BUDGET MATH — MUST BE CORRECT:
   A 1-day trip with 60,000 budget may only cost 20,000-30,000. Report the real remaining amount.
 
 ═══════════════════════════════════════════════════
+TRANSPORT IN BUDGET — MULTIPLY BY TRAVELERS:
+═══════════════════════════════════════════════════
+- Transport prices in the transport table are PER PERSON.
+- In the budget section, the transport cost MUST be the TOTAL for ALL travelers.
+- If transport = 13,500/person and there are 4 travelers → budget transport = 54,000 (NOT 13,500).
+- The budget transport number MUST MATCH the "الإجمالي" column in the transport table.
+- If these numbers don't match, the plan is WRONG. Fix it before writing.
+
+═══════════════════════════════════════════════════
 CONSISTENCY — CRITICAL:
 ═══════════════════════════════════════════════════
 - The hotel in your budget table MUST be the SAME hotel shown in the hotels section.
-- The transport cost MUST match the flight/transport prices shown in the transport section.
+- The transport cost in budget MUST match the TOTAL transport (per_person × num_travelers) from the transport table.
 - Do NOT show one hotel in the hotels table and a different hotel in the budget notes.
 - The AI recommendation hotel = the hotel used for budget calculation = the hotel in the itinerary.
 
+DO NOT include a "نظرة عامة على الرحلة" (trip overview) section. This information is already
+displayed in the app header (destination, dates, travelers, budget). Starting the plan with
+an overview repeats what the user already sees. Start directly with the hotels/transport tables.
+
 Use ALL research notes: flights/transport, hotels, visa, weather, activities, places, budget.
-Include quick-reference summary table at top.
 If a review exists, incorporate the fixes."""
 
 REVIEWER_SYSTEM = """You are the Travel Plan Reviewer — a domain-specific validator.
@@ -648,6 +675,13 @@ You validate the LOGIC and COMPLETENESS of the travel plan.
 - For short trips (1-3 days), if hotel cost seems unrealistically high (e.g., 45,000/night), flag: -15 points.
 - Transport cost in budget must match actual flight prices from research.
 - Budget priority must be: Hotel first (biggest share) → Transport second → Activities third.
+
+## Transport × Travelers consistency — CRITICAL:
+- Transport table shows per-person cost and total (per_person × travelers).
+- Budget section transport MUST equal that total, NOT the per-person amount.
+- If transport table says "13,500/person × 4 = 54,000" but budget says "15,250 for transport": CRITICAL ERROR, -25 points.
+- These numbers MUST match. If they don't, add to fix_instructions.
+- Also check: activities and food in budget should be multiplied by num_travelers if priced per-person.
 
 ## Budget utilization validation — CRITICAL FOR LUXURY/MID-RANGE:
 - Calculate: remaining_percentage = (remaining / user_budget) × 100
@@ -750,10 +784,12 @@ TRAVEL STYLE — MUST BE REFLECTED:
 - BUDGET: cheapest practical options.
 - If the draft recommends a bus for a luxury traveler, REPLACE it with flights/private transfer.
 
-Your output must include:
-1. Clean summary table (destination, dates, budget, visa status)
+DO NOT include a "نظرة عامة على الرحلة" (trip overview) section. The app header already
+shows destination, dates, number of travelers, and budget. Do NOT repeat this info.
+Start directly with the hotel and transport comparison tables.
 
-2. HOTELS — ALWAYS show ALL 3 hotel options in a comparison table:
+Your output must include:
+1. HOTELS — ALWAYS show ALL 3 hotel options in a comparison table:
 | الفندق | النجوم | السعر/ليلة | المميزات | التقييم |
 |--------|--------|------------|----------|---------|
 | فندق 1 (الأغلى) | ⭐⭐⭐⭐⭐ | X ج.م | كذا | 9.2 |
@@ -791,13 +827,16 @@ BUDGET MATH — MUST BE CORRECT:
 - If remaining > 0: write "الميزانية المتبقية: [amount]". NEVER say "تم استهلاك الميزانية".
 - For short trips (1-3 days), total will be MUCH less than budget. This is normal and correct.
 - The hotel in budget MUST match the recommended hotel in the hotels section.
-- Transport cost MUST match the flight prices shown.
+- Transport cost in budget MUST be the TOTAL for ALL travelers (per_person × num_travelers).
+  If transport table shows 13,500/person × 4 travelers = 54,000, budget transport = 54,000.
+  NOT 13,500. The budget transport MUST match the "الإجمالي" column in the transport table.
 
 CONSISTENCY CHECK BEFORE FINALIZING:
 - Hotel name in hotels table = hotel in budget = hotel in itinerary (all same)
-- Transport cost in transport table = transport in budget (same numbers)
+- Transport cost in budget = TOTAL transport from transport table (per_person × travelers)
 - Total cost in budget < user's budget (with remaining amount shown)
 - No embassy info for domestic travel
+- No "نظرة عامة" section (info is in app header)
 
 IMPORTANT: Do NOT include any confidence score, quality score, rating score,
 or any numerical evaluation in your output. Never write phrases like
@@ -845,14 +884,18 @@ STEP 2 — TRANSPORT VALIDATION (PRICE REALISM CRITICAL)
 STEP 3 — BUDGET CROSS-CHECK (MOST CRITICAL)
 ═══════════════════════════════════════════════════
 - Take HOTEL_TOTAL from Step 1 and TRANSPORT_COST from Step 2.
+- CRITICAL: Transport costs are PER PERSON. The user's query contains "Number of travelers: X".
+  Extract that number. Multiply transport per-person cost by NUM_TRAVELERS to get TOTAL TRANSPORT.
+  Example: flight = 13,500/person, 4 travelers → TOTAL TRANSPORT = 54,000. NOT 13,500.
 - Compare with what the Budget agent calculated.
 - If Budget agent used DIFFERENT hotel price → OVERRIDE with the real hotel price.
 - If Budget agent used DIFFERENT transport cost → OVERRIDE with the real transport cost.
+- If Budget agent did NOT multiply transport by num_travelers → FIX IT.
 - PRIORITY ORDER for budget allocation:
   1st: HOTEL (الفندق) — gets the biggest share, maximize quality
   2nd: TRANSPORT (النقل) — flights/transfers are non-negotiable costs
   3rd: ACTIVITIES (الأنشطة) — what remains after hotel + transport
-- Recalculate: TOTAL = hotel + transport + activities + food + misc
+- Recalculate: TOTAL = hotel + transport(×travelers) + activities(×travelers) + food(×travelers) + misc
 - REMAINING = user_budget - TOTAL
 - If REMAINING > 0: mark as "under budget" with remaining amount.
 - If REMAINING < 0: FLAG as over-budget and suggest cuts (cut activities first, NOT hotel).
@@ -1005,12 +1048,10 @@ def visa_node(state: GraphState) -> GraphState:
     agent = _make_research_agent(VISA_SYSTEM)
 
     # ── Extract nationality explicitly from the question ──
-    question_lower = state['question'].lower()
     nationality = "unknown"
     for line in state['question'].split('\n'):
         line_stripped = line.strip()
         if 'nationality' in line_stripped.lower() or 'جنسي' in line_stripped:
-            # Extract the value after the colon
             if ':' in line_stripped:
                 nationality = line_stripped.split(':', 1)[1].strip()
             elif '：' in line_stripped:
@@ -1019,40 +1060,124 @@ def visa_node(state: GraphState) -> GraphState:
 
     destination = state['plan']['destination']
 
-    # ── Map nationality to country for clear comparison ──
+    # ── Map nationality to country ──
     nationality_country_map = {
-        'مصري': 'مصر', 'egyptian': 'egypt',
-        'سعودي': 'السعودية', 'saudi': 'saudi arabia',
-        'إماراتي': 'الإمارات', 'emirati': 'uae',
-        'أردني': 'الأردن', 'jordanian': 'jordan',
-        'لبناني': 'لبنان', 'lebanese': 'lebanon',
-        'عراقي': 'العراق', 'iraqi': 'iraq',
-        'كويتي': 'الكويت', 'kuwaiti': 'kuwait',
-        'بحريني': 'البحرين', 'bahraini': 'bahrain',
-        'عماني': 'عُمان', 'omani': 'oman',
-        'قطري': 'قطر', 'qatari': 'qatar',
-        'تونسي': 'تونس', 'tunisian': 'tunisia',
-        'مغربي': 'المغرب', 'moroccan': 'morocco',
-        'جزائري': 'الجزائر', 'algerian': 'algeria',
-        'سوري': 'سوريا', 'syrian': 'syria',
-        'أمريكي': 'أمريكا', 'american': 'usa',
-        'بريطاني': 'بريطانيا', 'british': 'uk',
+        'مصري': 'egypt', 'egyptian': 'egypt', 'مصرية': 'egypt',
+        'سعودي': 'saudi arabia', 'saudi': 'saudi arabia', 'سعودية': 'saudi arabia',
+        'إماراتي': 'uae', 'emirati': 'uae', 'إماراتية': 'uae',
+        'أردني': 'jordan', 'jordanian': 'jordan',
+        'لبناني': 'lebanon', 'lebanese': 'lebanon',
+        'عراقي': 'iraq', 'iraqi': 'iraq',
+        'كويتي': 'kuwait', 'kuwaiti': 'kuwait', 'كويتية': 'kuwait',
+        'بحريني': 'bahrain', 'bahraini': 'bahrain',
+        'عماني': 'oman', 'omani': 'oman',
+        'قطري': 'qatar', 'qatari': 'qatar',
+        'تونسي': 'tunisia', 'tunisian': 'tunisia',
+        'مغربي': 'morocco', 'moroccan': 'morocco',
+        'جزائري': 'algeria', 'algerian': 'algeria',
+        'سوري': 'syria', 'syrian': 'syria',
+        'أمريكي': 'usa', 'american': 'usa',
+        'بريطاني': 'uk', 'british': 'uk',
+        'فرنسي': 'france', 'french': 'france',
+        'ألماني': 'germany', 'german': 'germany',
     }
     nat_lower = nationality.lower().strip()
-    traveler_country = nationality_country_map.get(nat_lower, nationality)
+    traveler_country = nationality_country_map.get(nat_lower, 'unknown')
+
+    # ── Map destination (city/resort) to country — DETERMINISTIC ──
+    # This is critical: the destination from the plan is a CITY name, not a country.
+    # We must map it to the correct country to compare with traveler's country.
+    destination_country_keywords = {
+        'egypt': [
+            'مصر', 'egypt', 'cairo', 'القاهرة', 'sharm', 'شرم', 'hurghada', 'الغردقة',
+            'luxor', 'الأقصر', 'aswan', 'أسوان', 'dahab', 'دهب', 'marsa alam', 'مرسى علم',
+            'el gouna', 'الجونة', 'ain sokhna', 'العين السخنة', 'سهل حشيش', 'sahl hasheesh',
+            'alexandria', 'الإسكندرية', 'siwa', 'سيوة', 'nuweiba', 'نويبع', 'taba', 'طابا',
+            'marsa matruh', 'مرسى مطروح', 'ras sudr', 'رأس سدر', 'port said', 'بورسعيد',
+            'soma bay', 'سوما باي', 'makadi', 'مكادي', 'safaga', 'سفاجا', 'north coast', 'الساحل الشمالي',
+        ],
+        'saudi arabia': [
+            'السعودية', 'saudi', 'riyadh', 'الرياض', 'jeddah', 'جدة', 'mecca', 'مكة',
+            'medina', 'المدينة', 'abha', 'أبها', 'taif', 'الطائف', 'dammam', 'الدمام',
+            'khobar', 'الخبر', 'neom', 'نيوم', 'al ula', 'العلا', 'yanbu', 'ينبع',
+        ],
+        'uae': [
+            'الإمارات', 'uae', 'dubai', 'دبي', 'abu dhabi', 'أبو ظبي', 'sharjah', 'الشارقة',
+            'ras al khaimah', 'رأس الخيمة', 'ajman', 'عجمان', 'fujairah', 'الفجيرة',
+        ],
+        'jordan': ['الأردن', 'jordan', 'amman', 'عمان', 'petra', 'البتراء', 'aqaba', 'العقبة', 'dead sea'],
+        'lebanon': ['لبنان', 'lebanon', 'beirut', 'بيروت'],
+        'turkey': ['تركيا', 'turkey', 'istanbul', 'إسطنبول', 'antalya', 'أنطاليا', 'bodrum', 'بودروم', 'trabzon', 'طرابزون'],
+        'morocco': ['المغرب', 'morocco', 'marrakech', 'مراكش', 'casablanca', 'الدار البيضاء', 'fes', 'فاس', 'tangier', 'طنجة'],
+        'tunisia': ['تونس', 'tunisia', 'tunis', 'sousse', 'سوسة', 'hammamet', 'الحمامات'],
+        'qatar': ['قطر', 'qatar', 'doha', 'الدوحة'],
+        'kuwait': ['الكويت', 'kuwait'],
+        'bahrain': ['البحرين', 'bahrain', 'manama', 'المنامة'],
+        'oman': ['عُمان', 'عمان', 'oman', 'muscat', 'مسقط', 'salalah', 'صلالة'],
+        'iraq': ['العراق', 'iraq', 'baghdad', 'بغداد', 'erbil', 'أربيل'],
+        'usa': ['أمريكا', 'usa', 'united states', 'new york', 'los angeles', 'miami', 'las vegas'],
+        'uk': ['بريطانيا', 'uk', 'united kingdom', 'london', 'لندن', 'england'],
+        'france': ['فرنسا', 'france', 'paris', 'باريس'],
+        'germany': ['ألمانيا', 'germany', 'berlin', 'برلين', 'munich', 'ميونخ'],
+        'italy': ['إيطاليا', 'italy', 'rome', 'روما', 'milan', 'ميلان'],
+        'spain': ['إسبانيا', 'spain', 'barcelona', 'برشلونة', 'madrid', 'مدريد'],
+        'greece': ['اليونان', 'greece', 'athens', 'أثينا', 'santorini', 'سانتوريني'],
+        'malaysia': ['ماليزيا', 'malaysia', 'kuala lumpur', 'كوالالمبور'],
+        'indonesia': ['إندونيسيا', 'indonesia', 'bali', 'بالي', 'jakarta', 'جاكرتا'],
+        'thailand': ['تايلاند', 'thailand', 'bangkok', 'بانكوك', 'phuket', 'بوكيت'],
+        'maldives': ['المالديف', 'maldives', 'malé', 'ماليه'],
+    }
+
+    dest_lower = destination.lower().strip()
+    destination_country = 'unknown'
+    for country, keywords in destination_country_keywords.items():
+        for kw in keywords:
+            if kw in dest_lower:
+                destination_country = country
+                break
+        if destination_country != 'unknown':
+            break
+
+    # ── DETERMINISTIC domestic/international check ──
+    # This decision is NOT left to the LLM — we compute it ourselves
+    is_domestic = (traveler_country != 'unknown' and
+                   destination_country != 'unknown' and
+                   traveler_country == destination_country)
+
+    if is_domestic:
+        # Skip LLM entirely — we know this is domestic
+        state["visa_notes"] = ["لا حاجة لتأشيرة — المسافر داخل بلده."]
+        return state
+
+    # ── INTERNATIONAL travel — force the LLM to research visa ──
+    # Map traveler_country to Arabic name for display
+    country_arabic = {
+        'egypt': 'مصر', 'saudi arabia': 'السعودية', 'uae': 'الإمارات',
+        'jordan': 'الأردن', 'lebanon': 'لبنان', 'iraq': 'العراق',
+        'kuwait': 'الكويت', 'bahrain': 'البحرين', 'oman': 'عُمان',
+        'qatar': 'قطر', 'tunisia': 'تونس', 'morocco': 'المغرب',
+        'algeria': 'الجزائر', 'syria': 'سوريا', 'usa': 'أمريكا',
+        'uk': 'بريطانيا', 'france': 'فرنسا', 'germany': 'ألمانيا',
+    }
+    traveler_country_ar = country_arabic.get(traveler_country, traveler_country)
+    dest_country_ar = country_arabic.get(destination_country, destination_country)
 
     output = _invoke_agent(agent,
-        f"""═══ VISA RESEARCH REQUEST ═══
-TRAVELER NATIONALITY: {nationality}
-TRAVELER'S COUNTRY: {traveler_country}
-DESTINATION: {destination}
+        f"""═══ VISA RESEARCH REQUEST — INTERNATIONAL TRAVEL ═══
+⚠️ THIS IS CONFIRMED INTERNATIONAL TRAVEL. DO NOT say "no visa needed" or "domestic travel".
 
-Is this domestic or international travel?
-- If "{traveler_country}" is the SAME country as "{destination}" → DOMESTIC, no visa needed.
-- If they are DIFFERENT countries → INTERNATIONAL, research visa requirements.
+TRAVELER NATIONALITY: {nationality}
+TRAVELER'S COUNTRY: {traveler_country_ar} ({traveler_country})
+DESTINATION CITY: {destination}
+DESTINATION COUNTRY: {dest_country_ar} ({destination_country})
+
+{traveler_country_ar} ≠ {dest_country_ar} → THIS IS INTERNATIONAL TRAVEL.
+The traveler NEEDS visa information. Research visa requirements NOW.
+
+Search for: "{nationality} passport visa requirements for {destination_country}"
 
 Original request: {state['question']}
-═══════════════════════════"""
+═══════════════════════════════════════════════════"""
     )
     state["visa_notes"] = _parse_notes(output)
     return state
@@ -1115,17 +1240,40 @@ def budget_node(state: GraphState) -> GraphState:
     travel_style = state['plan'].get('travel_style', 'mid-range')
     num_days = state['plan']['num_days']
 
+    # ── Extract num_travelers from the question ──
+    num_travelers = 1
+    for line in state['question'].split('\n'):
+        line_stripped = line.strip().lower()
+        if 'number of travelers' in line_stripped or 'عدد المسافرين' in line_stripped:
+            # Extract the number after the colon
+            if ':' in line_stripped:
+                val = line_stripped.split(':', 1)[1].strip()
+                try:
+                    num_travelers = int(val)
+                except ValueError:
+                    pass
+            break
+
     # Pass hotel and flight research so budget uses ACTUAL prices
     hotel_research = chr(10).join('- ' + n for n in state.get('hotel_notes', []))
     flight_research = chr(10).join('- ' + n for n in state.get('flight_notes', []))
 
     output = _invoke_agent(agent,
         f"Calculate travel budget for: {state['question']}\nDestination: {state['plan']['destination']}\nEXACT number of days: {num_days} (calculate for {num_days} days ONLY, not more)\nTravel style: {travel_style}\n\n"
+        f"═══ CRITICAL: NUM_TRAVELERS = {num_travelers} ═══\n"
+        f"Transport costs below are PER PERSON. You MUST multiply by {num_travelers}.\n"
+        f"Example: if flight = 13,500/person, total transport = 13,500 × {num_travelers} = {13500 * num_travelers}\n"
+        f"Activities priced per person: multiply by {num_travelers}.\n"
+        f"Food costs: multiply by {num_travelers}.\n"
+        f"Hotel: usually per ROOM, do NOT multiply unless explicitly per-person.\n"
+        f"══════════════════════════════════════════════\n\n"
         f"══════ ACTUAL PRICES FROM OTHER AGENTS (use these, don't invent new ones) ══════\n"
         f"Hotel research (use the recommended hotel's actual price):\n{hotel_research}\n\n"
-        f"Flight/Transport research (use these actual transport costs):\n{flight_research}\n"
+        f"Flight/Transport research (use these actual transport costs — these are PER PERSON):\n{flight_research}\n"
         f"══════════════════════════════════════════════════════════════════════════════════\n\n"
-        f"IMPORTANT: Use the REAL prices above. The hotel cost in your budget MUST match the recommended hotel price. The transport cost MUST match the flight/transport prices researched."
+        f"IMPORTANT: Use the REAL prices above. The hotel cost in your budget MUST match the recommended hotel price.\n"
+        f"The transport cost MUST = per_person_price × {num_travelers} travelers.\n"
+        f"If flight agent says 13,500/person and there are {num_travelers} travelers, transport = {13500 * num_travelers}. NOT 13,500."
     )
     state["budget_notes"] = _parse_notes(output)
     return state
