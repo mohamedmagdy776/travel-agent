@@ -7,7 +7,86 @@ Deploy free:  push to GitHub → streamlit.io/cloud → connect repo → deploy
 
 import streamlit as st
 import os
+import re
 from datetime import date, timedelta
+
+
+def _md_to_html(text: str) -> str:
+    """
+    Convert markdown elements to HTML so they render inside <div class="rtl">
+    with unsafe_allow_html=True. Handles: headers, bold, pipe tables, lists, hr.
+    Leaves existing HTML tags untouched.
+    """
+    lines = text.split('\n')
+    result = []
+    in_table = False
+    table_rows = []
+
+    def flush_table():
+        nonlocal in_table, table_rows
+        if not table_rows:
+            return
+        html = '<table style="width:100%;border-collapse:collapse;margin:1rem 0;">\n'
+        for i, row in enumerate(table_rows):
+            cells = [c.strip() for c in row.strip('|').split('|')]
+            tag = 'th' if i == 0 else 'td'
+            style = 'border:1px solid #ddd;padding:8px;text-align:right;'
+            if i == 0:
+                style += 'background:#f5f5f5;font-weight:bold;'
+            html += '<tr>' + ''.join(f'<{tag} style="{style}">{c}</{tag}>' for c in cells) + '</tr>\n'
+        html += '</table>'
+        result.append(html)
+        table_rows = []
+        in_table = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Skip separator rows in markdown tables (|---|---|)
+        if re.match(r'^\|[\s\-:|]+\|$', stripped):
+            continue
+
+        # Pipe table row
+        if stripped.startswith('|') and stripped.endswith('|') and stripped.count('|') >= 3:
+            in_table = True
+            table_rows.append(stripped)
+            continue
+
+        # If we were in a table and hit a non-table line, flush
+        if in_table:
+            flush_table()
+
+        # Headers: ### h3, ## h2, # h1
+        if stripped.startswith('###'):
+            txt = stripped.lstrip('#').strip()
+            result.append(f'<h3 style="margin:1.5rem 0 0.5rem;">{txt}</h3>')
+        elif stripped.startswith('##'):
+            txt = stripped.lstrip('#').strip()
+            result.append(f'<h2 style="margin:1.5rem 0 0.5rem;">{txt}</h2>')
+        elif stripped.startswith('#'):
+            txt = stripped.lstrip('#').strip()
+            result.append(f'<h1 style="margin:1.5rem 0 0.5rem;">{txt}</h1>')
+        # Horizontal rule
+        elif re.match(r'^[-*_]{3,}$', stripped):
+            result.append('<hr style="margin:1rem 0;">')
+        # Bullet list items
+        elif stripped.startswith('- ') or stripped.startswith('* '):
+            txt = stripped[2:]
+            # Bold: **text**
+            txt = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', txt)
+            result.append(f'<li style="margin:0.3rem 0;">{txt}</li>')
+        # Empty line
+        elif not stripped:
+            result.append('<br>')
+        else:
+            # Bold: **text**
+            line_html = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', stripped)
+            result.append(f'<p style="margin:0.3rem 0;">{line_html}</p>')
+
+    # Flush any remaining table
+    flush_table()
+
+    return '\n'.join(result)
 
 # ─── Page Config ───────────────────────────────────────────────
 st.set_page_config(
@@ -333,7 +412,9 @@ if submitted:
         "weather_notes": [], "activities_notes": [], "places_notes": [],
         "budget_notes": [], "coordinator_brief": None,
         "draft": None, "review": None,
-        "iteration": 0, "max_iterations": 2,
+        "iteration": 0, "max_iterations": 3,
+        "user_budget": float(budget),
+        "num_travelers": num_travelers,
     }
 
     st.markdown("---")
@@ -384,11 +465,15 @@ if submitted:
         tab1, tab2, tab3, tab4 = st.tabs([t("tab1"), t("tab2"), t("tab3"), t("tab4")])
 
         with tab1:
+            draft_content = result.get("draft", "")
             if is_ar:
-                st.markdown(f'<div class="rtl">{result.get("draft","")}</div>',
+                # Convert any markdown (###, pipe tables, **bold**) to HTML
+                # so it renders correctly inside RTL div with unsafe_allow_html
+                draft_html = _md_to_html(draft_content)
+                st.markdown(f'<div class="rtl">{draft_html}</div>',
                             unsafe_allow_html=True)
             else:
-                st.markdown(result.get("draft", ""))
+                st.markdown(draft_content)
             st.download_button(
                 t("download"),
                 result.get("draft", ""),
@@ -444,8 +529,40 @@ if submitted:
 
         with tab4:
             st.subheader(t("budget_break"))
-            for n in result.get("budget_notes", []):
-                if n.strip(): st.markdown(f"- {n}")
+            # ── Extract budget section from the DRAFT so tab4 matches tab1 ──
+            import re
+            draft_text = result.get("draft", "")
+            budget_section = ""
+
+            # Try to extract budget/cost section from draft
+            budget_patterns = [
+                # Arabic headers
+                r'(##?\s*(?:الميزانية\s*الإجمالية|إجمالي\s*التكاليف|ملخص\s*الميزانية|التكاليف).*?)(?=##?\s|\Z)',
+                # English headers
+                r'(##?\s*(?:Budget|Total\s*Cost|Cost\s*Summary).*?)(?=##?\s|\Z)',
+                # HTML table with budget
+                r'(<table[\s\S]*?الإجمالي[\s\S]*?</table>)',
+            ]
+            for pattern in budget_patterns:
+                match = re.search(pattern, draft_text, re.DOTALL | re.IGNORECASE)
+                if match:
+                    budget_section = match.group(1).strip()
+                    break
+
+            if budget_section:
+                # Show the exact same budget section from the draft
+                if is_ar:
+                    budget_html = _md_to_html(budget_section)
+                    st.markdown(f'<div class="rtl">{budget_html}</div>',
+                                unsafe_allow_html=True)
+                else:
+                    budget_html = _md_to_html(budget_section)
+                    st.markdown(budget_html, unsafe_allow_html=True)
+            else:
+                # Fallback: show synced budget_notes
+                for n in result.get("budget_notes", []):
+                    if n.strip(): st.markdown(f"- {n}")
+
             # Internal only
             if result.get("review", {}).get("budget_check", {}).get("is_over_budget"):
                 print("[INTERNAL] Budget exceeded - consider revising plan")
