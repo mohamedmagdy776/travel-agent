@@ -429,6 +429,23 @@ For each hotel:
 VISA_SYSTEM = """You are the Visa agent. You have access to a web search tool called Tavily.
 
 ═══════════════════════════════════════════════════
+⛔ SCOPE — WHAT YOU OUTPUT (AND WHAT YOU NEVER OUTPUT):
+═══════════════════════════════════════════════════
+You output ONLY visa / passport / border-entry information. NOTHING ELSE.
+
+NEVER include in your output — these belong to OTHER agents and must NOT appear here:
+  ❌ Hotels, resorts, accommodation, room prices, "الفنادق" — handled by the Hotel agent.
+  ❌ Activities, excursions, tours, diving, "الأنشطة" — handled by the Activities agent.
+  ❌ Restaurants, cafes, dining, food — handled by the Places agent.
+  ❌ Attractions, beaches, sights, places to visit — handled by the Places agent.
+  ❌ Weather, temperature, what to pack — handled by the Weather agent.
+  ❌ A general "travel guide" dump of the destination.
+
+If your Tavily search returns a travel-guide page that also lists hotels, activities,
+or attractions, IGNORE all of that. Extract ONLY the visa/entry/passport facts.
+Your entire answer must be visa/passport/entry requirements and nothing else.
+
+═══════════════════════════════════════════════════
 STEP 1 — DETERMINE IF THIS IS DOMESTIC OR INTERNATIONAL TRAVEL:
 ═══════════════════════════════════════════════════
 You will receive NATIONALITY and DESTINATION COUNTRY explicitly. Compare them:
@@ -626,12 +643,17 @@ Write a detailed, specific, useful travel plan.
 ═══════════════════════════════════════════════════
 DAY COUNT — THE MOST CRITICAL RULE:
 ═══════════════════════════════════════════════════
-- The plan JSON contains "num_days". This is the EXACT number of days the user wants.
-- Your day-by-day itinerary MUST have EXACTLY num_days days. No more, no less.
-- If num_days = 1, write ONLY "Day 1". NEVER add Day 2.
-- If num_days = 3, write Day 1, Day 2, Day 3. NEVER add Day 4.
-- If num_days = 7, write Day 1 through Day 7. NEVER add Day 8.
-- VIOLATING THIS RULE IS THE WORST POSSIBLE ERROR.
+- The CONSTRAINTS section of each request gives you the EXACT "ITINERARY DAYS" number
+  and the "HOTEL NIGHTS" number. Use those EXACT numbers — do not invent your own.
+- The itinerary spans from the ARRIVAL day through the CHECK-OUT day:
+    • Day 1 = arrival day (check-in ~noon; afternoon/evening activities only).
+    • Middle days = full days.
+    • The LAST day = check-out / departure day (morning only; check-out + airport transfer).
+- Because arrival and check-out are separate days, ITINERARY DAYS = HOTEL NIGHTS + 1.
+  Example: 5 nights booked → 6 dated days (Day 1 arrival … Day 6 check-out).
+- Write EXACTLY the "ITINERARY DAYS" number of dated days. No more, no less.
+- NEVER merge the check-out into the last full day — check-out is its own final day.
+- VIOLATING THE DAY COUNT IS THE WORST POSSIBLE ERROR.
 
 ═══════════════════════════════════════════════════
 TRAVEL STYLE — MUST INFLUENCE EVERYTHING:
@@ -723,6 +745,25 @@ BUDGET MATH — MUST BE CORRECT:
   A 1-day trip with 60,000 budget may only cost 20,000-30,000. Report the real remaining amount.
 
 ═══════════════════════════════════════════════════
+USE THE BUDGET — FILL LEFTOVER WITH EXPERIENCES (multi-day non-budget trips):
+═══════════════════════════════════════════════════
+The user set a budget to be USED, not hoarded. The goal is: "I gave you a budget — use it up on a
+great trip." So for LUXURY and MID-RANGE trips of 4+ days, do NOT leave a large remaining balance.
+- AFTER you've picked the hotel and transport, check how much budget is left.
+- If the remaining is large (roughly >10% of the total budget), FILL IT with real, named experiences
+  — do NOT just inflate hotel/flight prices. Add value the traveler actually enjoys:
+    1. More dining experiences — name specific premium/notable restaurants, with a price per meal.
+    2. Extra excursions / day-trips / activities — name them (operator, location, price/person).
+    3. Outings and add-ons — spa, private boat, sunset cruise, guided tours, premium entry tickets.
+- Distribute these ACROSS the daily itinerary (e.g. a nice dinner each evening, one excursion per
+  full day) so the days feel full, and ADD their costs to the budget table (Activities / Dining rows).
+- Keep adding until the remaining balance is SMALL — target using about 90% of the budget (aim for a
+  final total of roughly 85–95% of the budget). Leaving ~5–10% as a small buffer is fine.
+- HARD RULE: the total must still be LESS than the budget. Never go over. Fill UP TO it, never past it.
+- BUDGET-style travelers are the exception: for them, a large remaining balance is GOOD (they save).
+- Every added restaurant/activity must be REAL and NAMED with a price — never "extra dining ~5,000".
+
+═══════════════════════════════════════════════════
 TRANSPORT IN BUDGET — MULTIPLY BY TRAVELERS:
 ═══════════════════════════════════════════════════
 - The transport table already shows TOTAL for all travelers in the "الإجمالي" column.
@@ -771,10 +812,14 @@ REVIEWER_SYSTEM = """You are the Travel Plan Reviewer — a domain-specific vali
 You validate the LOGIC and COMPLETENESS of the travel plan.
 
 ## DAY COUNT validation — MOST CRITICAL
-- The user requested a specific num_days. Count the days in the itinerary.
-- If the itinerary has MORE days than num_days, this is a CRITICAL error (-25 points).
-- If the itinerary has FEWER days than num_days, this is also an error (-15 points).
-- Add to fix_instructions: "Day count mismatch: user requested X days but itinerary has Y days. Fix to exactly X days."
+- The CONSTRAINTS give an EXPECTED ITINERARY DAYS number (= nights booked + 1, because the
+  arrival day and the check-out day are separate dated days). Count the dated days in the itinerary.
+- The itinerary MUST run Day 1 = arrival/check-in … LAST day = check-out/departure.
+- If the dated-day count is MORE than expected, this is a CRITICAL error (-25 points).
+- If it is FEWER than expected (e.g. check-out was crammed into the last full day instead of
+  being its own day), this is also an error (-15 points).
+- Add to fix_instructions: "Day count mismatch: expected X dated days (N nights + arrival + check-out)
+  but itinerary has Y. Fix to exactly X days, with the last day being a separate check-out day."
 
 ## Travel Style validation
 - Check if recommendations match the travel style (luxury/mid-range/budget).
@@ -948,10 +993,14 @@ Produce the ultimate polished travel itinerary from all research and drafts.
 ═══════════════════════════════════════════════════
 DAY COUNT — ABSOLUTE RULE:
 ═══════════════════════════════════════════════════
-- The plan JSON has "num_days". Your itinerary MUST have EXACTLY that many days.
-- If num_days = 1, write ONLY Day 1. NEVER write Day 2.
-- If num_days = 5, write Day 1 through Day 5. NEVER write Day 6.
-- Count the days in your output before finishing. If the count doesn't match num_days, FIX IT.
+- The CONSTRAINTS give the EXACT "ITINERARY DAYS" and "HOTEL NIGHTS" numbers. Use them.
+- The itinerary spans arrival → check-out, so ITINERARY DAYS = HOTEL NIGHTS + 1:
+    • Day 1 = arrival day (check-in ~noon; afternoon/evening only).
+    • Middle days = full days.
+    • The LAST day = check-out / departure day (morning only; check-out + airport transfer).
+- Example: 5 nights → 6 dated days (Day 1 arrival … Day 6 check-out).
+- Count the dated days in your output before finishing. If it doesn't match ITINERARY DAYS, FIX IT.
+- NEVER merge check-out into the last full day — check-out is its own separate final day.
 
 ═══════════════════════════════════════════════════
 TRAVEL STYLE — MUST BE REFLECTED:
@@ -983,7 +1032,8 @@ CRITICAL: Show ALL 3 hotels. NEVER show just 1 hotel. Ordered from most expensiv
 CRITICAL: Always show price PER PERSON + TOTAL. If 3 travelers × 8,000 = write "24,000 ج.م إجمالي".
 Then: "🏆 توصية الـ AI: [الخيار] — لأن [السبب]"
 
-4. Day-by-day itinerary with times, places, costs (EXACTLY num_days days)
+4. Day-by-day itinerary with times, places, costs (EXACTLY the ITINERARY DAYS from the
+   constraints — arrival day through a separate check-out day)
 5. Practical info (transport, money, language, safety)
 6. Packing checklist (based on weather)
 7. Emergency info (hospital, police numbers)
@@ -991,6 +1041,21 @@ Then: "🏆 توصية الـ AI: [الخيار] — لأن [السبب]"
    If the traveler is traveling within their own country (e.g., Egyptian in Egypt), NO embassy needed.
    Only include embassy for international travel.
 8. Budget breakdown at the END (total by category vs user budget)
+
+═══════════════════════════════════════════════════
+USE THE BUDGET — FILL LEFTOVER WITH EXPERIENCES (LUXURY / MID-RANGE, 4+ days):
+═══════════════════════════════════════════════════
+The user gave a budget to be USED on a great trip, not left sitting unused.
+- After the hotel + transport are set, if a large balance remains (roughly >10% of the budget),
+  FILL it with REAL, NAMED experiences — NOT by inflating hotel/flight prices:
+    • more dining (named premium restaurants, price/meal),
+    • extra excursions / day-trips (named operator + location + price/person),
+    • outings & add-ons (spa, private boat, sunset cruise, guided tours, premium tickets).
+- Spread them across the daily itinerary so the days feel full, and add their costs to the
+  budget table under Activities / Dining.
+- Target using ~85–95% of the budget. A small ~5–10% buffer is fine; a big unused balance is NOT.
+- HARD RULE: total must stay BELOW the budget — fill UP TO it, never past it.
+- BUDGET-style travelers are the exception: for them a large remaining balance is GOOD.
 
 If a review exists, incorporate ALL fixes.
 Make it ready to print and follow.
@@ -1506,7 +1571,9 @@ def hotel_node(state: GraphState) -> GraphState:
     agent = _make_research_agent(HOTEL_SYSTEM)
     travel_style = state['plan'].get('travel_style', 'mid-range')
     num_days = state['plan']['num_days']
-    num_nights = max(num_days - 1, 1)
+    # num_days represents the NIGHTS booked: the frontend sets
+    # check-out date = arrival date + num_days, so the guest stays num_days nights.
+    num_nights = max(num_days, 1)
 
     # ── Use structured budget data from GraphState ──
     total_budget = state.get('user_budget') or 0
@@ -1541,7 +1608,7 @@ def hotel_node(state: GraphState) -> GraphState:
         )
 
     output = _invoke_agent(agent,
-        f"Find hotels for: {state['question']}\nDestination: {state['plan']['destination']}\nDates: {state['plan']['travel_dates']}\nNumber of nights: {num_nights}\nTravel style: {travel_style}\n{flight_context}{budget_constraint}\nIMPORTANT: This is a {num_days}-day trip ({num_nights} nights). Search for REAL hotel prices per night. ALL options MUST be within the budget limit above."
+        f"Find hotels for: {state['question']}\nDestination: {state['plan']['destination']}\nDates: {state['plan']['travel_dates']}\nNumber of nights: {num_nights}\nTravel style: {travel_style}\n{flight_context}{budget_constraint}\nIMPORTANT: The guest stays {num_nights} nights (itinerary covers {num_nights + 1} days: arrival day through check-out day). Search for REAL hotel prices per night. ALL options MUST be within the budget limit above."
     )
     state["hotel_notes"] = _parse_notes(output)
     # CODE-LEVEL: Inject budget-compliant option if all options are over budget
@@ -1551,6 +1618,53 @@ def hotel_node(state: GraphState) -> GraphState:
             state["hotel_notes"], max_per_night, "hotel", destination
         )
     return state
+
+
+def _sanitize_visa_notes(notes: List[str]) -> List[str]:
+    """Remove any note that leaked hotel / activity / restaurant / attraction / weather
+    content into the visa section. The Visa tab must show ONLY visa/entry info —
+    hotels are shown once in the full itinerary, activities once in the full itinerary."""
+    if not notes:
+        return notes
+
+    # Keywords that indicate the line is NOT visa content (it leaked from another agent).
+    forbidden = [
+        # hotels / accommodation
+        'فندق', 'فنادق', 'الفنادق', 'ريزورت', 'منتجع', 'نزل', 'إقامة',
+        'hotel', 'resort', 'accommodation', 'ليلة', '/night', 'للّيلة', 'لليلة', 'لليلتين',
+        'نجوم', 'نجمة', 'star', '⭐',
+        # activities / excursions / tours
+        'نشاط', 'الأنشطة', 'أنشطة', 'رحلة بحرية', 'غطس', 'غوص', 'سفاري', 'جولة', 'جولات',
+        'activity', 'activities', 'excursion', 'tour', 'snorkel', 'diving', 'safari',
+        # restaurants / dining / attractions
+        'مطعم', 'مطاعم', 'مقهى', 'كافيه', 'شاطئ', 'معلم', 'معالم', 'زيارة',
+        'restaurant', 'cafe', 'dining', 'beach', 'attraction',
+        # weather (belongs to weather agent / weather tab)
+        'طقس', 'حرارة', 'درجة الحرارة', 'weather', 'temperature', 'rainfall', 'humidity',
+    ]
+    # Words that confirm a line IS visa content — keep it even if it brushes a forbidden word.
+    visa_safe = [
+        'تأشير', 'تأشيرة', 'فيزا', 'جواز', 'جوازات', 'باسبور', 'دخول', 'إقامة قانونية',
+        'visa', 'passport', 'entry', 'e-visa', 'visa-on-arrival', 'عند الوصول',
+        'صلاحية الجواز', 'رسوم التأشيرة', 'لا حاجة لتأشيرة', 'no visa',
+    ]
+
+    cleaned = []
+    for note in notes:
+        low = note.lower()
+        is_visa = any(k.lower() in low for k in visa_safe)
+        is_forbidden = any(k.lower() in low for k in forbidden)
+        # Keep a line if it's clearly visa content, OR if it doesn't look like leaked content.
+        if is_visa or not is_forbidden:
+            cleaned.append(note)
+        else:
+            print(f"[CODE-LEVEL] Stripped leaked line from visa_notes: {note[:70]}")
+
+    # If sanitizing removed everything (the agent returned only leaked content),
+    # fall back to a safe minimal message rather than an empty section.
+    if not cleaned:
+        cleaned = ["يرجى التأكد من متطلبات التأشيرة وصلاحية جواز السفر قبل السفر."]
+    return cleaned
 
 
 def visa_node(state: GraphState) -> GraphState:
@@ -1622,7 +1736,8 @@ Search for: "{nationality} passport visa to {destination_country}"
 Original request: {state['question']}
 ═══════════════════════════════════════════════════"""
     )
-    state["visa_notes"] = _parse_notes(output)
+    # Strip any hotel/activity/restaurant/weather content that leaked into visa research.
+    state["visa_notes"] = _sanitize_visa_notes(_parse_notes(output))
     return state
 
 
@@ -1701,8 +1816,12 @@ def budget_node(state: GraphState) -> GraphState:
     hotel_research = chr(10).join('- ' + n for n in state.get('hotel_notes', []))
     flight_research = chr(10).join('- ' + n for n in state.get('flight_notes', []))
 
+    num_nights = max(num_days, 1)  # num_days = nights booked (check-out = arrival + num_days)
     output = _invoke_agent(agent,
-        f"Calculate travel budget for: {state['question']}\nDestination: {state['plan']['destination']}\nEXACT number of days: {num_days} (calculate for {num_days} days ONLY, not more)\nTravel style: {travel_style}\n\n"
+        f"Calculate travel budget for: {state['question']}\nDestination: {state['plan']['destination']}\n"
+        f"HOTEL NIGHTS: {num_nights} (hotel total = price/night × {num_nights} nights).\n"
+        f"ITINERARY DAYS: {num_nights + 1} (arrival day through check-out day — for meals/activities planning).\n"
+        f"Calculate for exactly {num_nights} nights, not more.\nTravel style: {travel_style}\n\n"
         f"═══ CRITICAL: NUM_TRAVELERS = {num_travelers} ═══\n"
         f"Transport costs below are PER PERSON. You MUST multiply by {num_travelers}.\n"
         f"Example: if flight = 13,500/person, total transport = 13,500 × {num_travelers} = {13500 * num_travelers}\n"
@@ -1745,7 +1864,7 @@ def coordinator_node(state: GraphState) -> GraphState:
 ══════ PLAN METADATA ══════
 Destination: {destination}
 Dates: {state['plan']['travel_dates']}
-Duration: {num_days} days
+Duration: {max(num_days, 1)} nights ({max(num_days, 1) + 1} itinerary days: arrival day → check-out day)
 Travel Style: {travel_style}
 Traveler Preferences: {state['plan'].get('traveler_preferences', [])}
 Key Risks: {state['plan'].get('key_risks', [])}
@@ -1800,7 +1919,11 @@ def writer_node(state: GraphState) -> GraphState:
     num_travelers = state.get('num_travelers', 1)
     max_transport = int(user_budget * 0.35) if user_budget else 0
     max_hotel = int(user_budget * 0.45) if user_budget else 0
-    num_days_for_hotel = max(num_days - 1, 1)  # nights = days - 1
+    # num_days = nights booked (check-out = arrival + num_days).
+    # Itinerary spans num_days + 1 dated days (arrival day → check-out day).
+    num_nights = max(num_days, 1)
+    itinerary_days = num_nights + 1
+    num_days_for_hotel = num_nights
     max_hotel_per_night = int(max_hotel / num_days_for_hotel) if max_hotel else 0
     max_transport_per_person = int(max_transport / max(num_travelers, 1)) if max_transport else 0
 
@@ -1833,7 +1956,12 @@ def writer_node(state: GraphState) -> GraphState:
         HumanMessage(content=f"""Question: {state['question']}
 
 ══════ CRITICAL CONSTRAINTS ══════
-NUMBER OF DAYS: {num_days} — write EXACTLY {num_days} day(s) in the itinerary. Not {num_days + 1}, not {num_days - 1}.
+ITINERARY DAYS: {itinerary_days} — write EXACTLY {itinerary_days} dated days.
+  • Day 1 = ARRIVAL day (check-in around noon; afternoon/evening only).
+  • Days 2 to {num_nights} = FULL days.
+  • Day {itinerary_days} = CHECK-OUT / departure day (morning only; check-out + transfer to airport).
+HOTEL NIGHTS: {num_nights} (guest sleeps {num_nights} nights, checks out on day {itinerary_days}).
+Do NOT cram check-out into the last full day — the check-out day is its own separate day.
 TRAVEL STYLE: {travel_style} — ALL recommendations must match this style.
 ══════════════════════════════════
 
@@ -1904,7 +2032,9 @@ def reviewer_node(state: GraphState) -> GraphState:
 {state['question']}
 
 ══════ VALIDATION TARGETS ══════
-EXPECTED NUM_DAYS: {num_days} — count the days in the draft and flag if different.
+EXPECTED ITINERARY DAYS: {max(num_days, 1) + 1} — the itinerary must have exactly this many dated days
+  (Day 1 = arrival/check-in, middle days = full days, LAST day = check-out/departure).
+  The guest stays {max(num_days, 1)} nights. Flag ONLY if the dated-day count differs from {max(num_days, 1) + 1}.
 EXPECTED TRAVEL STYLE: {travel_style} — flag any recommendation that doesn't match.
 ══════════════════════════════════
 
@@ -1946,7 +2076,10 @@ def finalizer_node(state: GraphState) -> GraphState:
     num_travelers = state.get('num_travelers', 1)
     max_transport = int(user_budget * 0.35) if user_budget else 0
     max_hotel = int(user_budget * 0.45) if user_budget else 0
-    num_nights = max(num_days - 1, 1)
+    # num_days = nights booked (check-out = arrival + num_days).
+    # Itinerary spans num_days + 1 dated days (arrival day → check-out day).
+    num_nights = max(num_days, 1)
+    itinerary_days = num_nights + 1
     max_hotel_per_night = int(max_hotel / num_nights) if max_hotel else 0
 
     # ← ORCHESTRATOR PATTERN: Finalizer uses coordinator_brief as PRIMARY source
@@ -1990,18 +2123,21 @@ def finalizer_node(state: GraphState) -> GraphState:
         if remaining_pct > 30:
             target_min = int(user_budget * 0.75)
             target_max = int(user_budget * 0.95)
+            fill_amount = int(user_budget * 0.90 - estimated)
             force_upgrade = f"""
 ╔══════════════════════════════════════════════════════════════════════╗
-║  ⬆️⬆️⬆️ BUDGET UPGRADE REQUIRED ⬆️⬆️⬆️                              ║
+║  ⬆️⬆️⬆️ BUDGET UNDER-USED — FILL IT WITH EXPERIENCES ⬆️⬆️⬆️         ║
 ║  The plan only uses {int(estimated):,} of {int(user_budget):,} budget ({remaining_pct:.0f}% unused). ║
-║  This is a '{travel_style}' trip — the traveler WANTS quality.     ║
+║  This is a '{travel_style}' trip — the user wants the budget USED.  ║
 ║                                                                      ║
-║  UPGRADE THE PLAN:                                                   ║
-║  1) Pick a BETTER hotel (budget allows up to {max_hotel_per_night:,}/night)       ║
-║  2) Pick better flights (up to {int(max_transport / max(num_travelers, 1)):,}/person) ║
-║  3) Add more premium activities                                      ║
-║  4) Target total: {target_min:,} - {target_max:,}                               ║
-║  5) Use 75-95% of the budget for the best experience                 ║
+║  FILL the ~{max(fill_amount,0):,} leftover with REAL, NAMED experiences           ║
+║  (do NOT just inflate hotel/flight prices):                          ║
+║  1) Premium dining — named restaurants, price/meal, most evenings    ║
+║  2) Excursions / day-trips — named, price/person, one per full day   ║
+║  3) Outings — spa, private boat, sunset cruise, guided tours         ║
+║  4) Optionally upgrade hotel (≤{max_hotel_per_night:,}/night) or flights          ║
+║  Add every cost to the budget table. Spread across the daily plan.   ║
+║  Target total: {target_min:,} - {target_max:,} (stay UNDER {int(user_budget):,}).        ║
 ╚══════════════════════════════════════════════════════════════════════╝
 """
             print(f"[CODE-LEVEL] Force budget upgrade in finalizer: only using {int(estimated):,} of {int(user_budget):,}")
@@ -2011,7 +2147,11 @@ def finalizer_node(state: GraphState) -> GraphState:
         HumanMessage(content=f"""Question: {state['question']}
 
 ══════ CRITICAL CONSTRAINTS ══════
-NUMBER OF DAYS: {num_days} — write EXACTLY {num_days} day(s). Count them before finishing.
+ITINERARY DAYS: {itinerary_days} — write EXACTLY {itinerary_days} dated days. Count them before finishing.
+  • Day 1 = ARRIVAL day (check-in ~noon; afternoon/evening only).
+  • Days 2 to {num_nights} = FULL days.
+  • Day {itinerary_days} = CHECK-OUT / departure day (morning only; check-out + airport transfer).
+HOTEL NIGHTS: {num_nights} (checks out on day {itinerary_days}). The check-out day is a separate day — do NOT merge it into the last full day.
 TRAVEL STYLE: {travel_style} — every recommendation must match this style.
 ══════════════════════════════════
 
@@ -2117,8 +2257,11 @@ The current plan exceeds the budget by {overage:,} {cur} (Total: {est_total:,} {
             print(f"[CODE-LEVEL] LAST RESORT: Appended budget warning to draft (over by {overage:,})")
 
         # ══════════════════════════════════════════════════════════════
-        # POST-CHECK: If budget is severely underutilized (>40%
-        # remaining for non-budget travelers), do an upgrade pass
+        # POST-CHECK: If budget is underutilized for a non-budget traveler,
+        # FILL the leftover with real named experiences (dining/excursions/
+        # outings) instead of leaving money unused. Target ~90% utilization.
+        # Triggers even for small leftovers (e.g. 3-4% of a large budget) on
+        # trips of 3+ nights — one more nice dinner/excursion is worth adding.
         # ══════════════════════════════════════════════════════════════
         final_util = _extract_total_from_draft(resp, user_budget)
         if not final_util["is_over_budget"] and final_util.get("estimated_total", 0) > 0:
@@ -2127,40 +2270,53 @@ The current plan exceeds the budget by {overage:,} {cur} (Total: {est_total:,} {
             rem_pct = (rem / user_budget) * 100
             style_lower = travel_style.lower()
             is_budget_style = style_lower in ['budget', 'اقتصادي', 'رخيص']
-            if rem_pct > 40 and not is_budget_style:
-                print(f"[CODE-LEVEL] Finalizer output underutilizes budget: {int(est):,} of {int(user_budget):,} ({rem_pct:.0f}% unused) — forcing upgrade pass")
-                target_min = int(user_budget * 0.75)
-                target_max = int(user_budget * 0.95)
+            # Fill when: non-budget style, trip has 3+ nights, and either a meaningful
+            # % is unused (>7%) OR a meaningful absolute amount is unused (enough for
+            # at least one extra experience — ~2% of budget or 2,500, whichever larger).
+            min_fill_abs = max(int(user_budget * 0.02), 2500)
+            should_fill = (
+                not is_budget_style
+                and num_nights >= 3
+                and (rem_pct > 7 or rem >= min_fill_abs)
+                and rem >= min_fill_abs
+            )
+            if should_fill:
+                print(f"[CODE-LEVEL] Finalizer leftover {int(rem):,} ({rem_pct:.0f}%) — filling with experiences toward ~90%")
+                target_min = int(user_budget * 0.85)
+                target_max = int(user_budget * 0.96)
+                fill_amount = int(user_budget * 0.90 - est)
                 resp_upgrade = llm.invoke([
                     SystemMessage(content=FINALIZER_SYSTEM),
-                    HumanMessage(content=f"""The draft below only uses {int(est):,} of the {int(user_budget):,} budget ({rem_pct:.0f}% unused).
-This is a '{travel_style}' trip — the traveler wants a QUALITY experience, not to save money.
+                    HumanMessage(content=f"""The draft below uses only {int(est):,} of the {int(user_budget):,} budget — {int(rem):,} ({rem_pct:.0f}%) is left unused.
+This is a '{travel_style}' trip of {num_nights} nights. The user wants the budget USED on a great trip, not left over.
 
-MANDATORY UPGRADES — apply ALL of these:
-1. Pick a BETTER hotel — budget allows up to {max_hotel_per_night:,}/night for {num_nights} nights.
-   Choose a higher-rated or more luxurious hotel within this limit.
-2. Pick better flights — budget allows up to {int(max_transport / max(num_travelers, 1)):,}/person.
-   Choose a reputable airline with better service, but DO NOT exceed this per-person limit.
-3. Add more premium activities or upgrade existing ones.
-4. Target total: {target_min:,} - {target_max:,} (use 75-95% of budget).
-5. Recalculate the budget table with the upgraded numbers.
+FILL the ~{max(fill_amount, 0):,} leftover with REAL, NAMED experiences — do NOT inflate hotel/flight prices:
+1. Premium dining — add named restaurants (with price/meal). Aim for one nice dinner on most evenings.
+2. Excursions / day-trips — named operator + location + price/person. Add roughly one per full day.
+3. Outings & add-ons — spa, private boat, sunset cruise, guided tours, premium entry tickets.
+4. Only if it genuinely improves the trip, you may also upgrade the hotel (≤{max_hotel_per_night:,}/night)
+   or flights (≤{int(max_transport / max(num_travelers, 1)):,}/person).
 
-IMPORTANT: Do NOT go OVER {int(user_budget):,}. Stay between {target_min:,} and {target_max:,}.
+Spread the additions across the day-by-day itinerary (keep the SAME number of dated days) and add
+every new cost to the budget table under Activities / Dining. Recalculate the totals.
 
-Draft to upgrade:
+Target final total: {target_min:,} - {target_max:,}. HARD RULE: stay UNDER {int(user_budget):,} — never exceed it.
+Keep the same format, structure, and number of itinerary days.
+
+Draft to enrich:
 {resp}
 """),
                 ]).content
-                # Only use upgrade if it's better utilized but still within budget
+                # Only use the fill pass if it uses more budget but is still within budget.
                 check_upgrade = _extract_total_from_draft(resp_upgrade, user_budget)
                 upgrade_est = check_upgrade.get("estimated_total", 0)
                 if upgrade_est and not check_upgrade["is_over_budget"] and upgrade_est > est:
                     resp = resp_upgrade
-                    print(f"[CODE-LEVEL] Upgrade pass improved utilization: {int(upgrade_est):,} vs {int(est):,}")
+                    print(f"[CODE-LEVEL] Fill pass improved utilization: {int(upgrade_est):,} vs {int(est):,}")
                 elif upgrade_est and check_upgrade["is_over_budget"]:
-                    print(f"[CODE-LEVEL] Upgrade pass went over budget ({int(upgrade_est):,}) — keeping original")
+                    print(f"[CODE-LEVEL] Fill pass went over budget ({int(upgrade_est):,}) — keeping original")
                 else:
-                    print(f"[CODE-LEVEL] Upgrade pass didn't improve — keeping original")
+                    print(f"[CODE-LEVEL] Fill pass didn't improve — keeping original")
 
     state["draft"] = resp
 
@@ -2219,7 +2375,7 @@ def should_revise(state: GraphState) -> Literal["revise", "finalize"]:
                 f"CRITICAL: Plan is OVER BUDGET by {int(overage):,}. "
                 f"Total={int(estimated):,} but budget={int(user_budget):,}. "
                 f"You MUST: 1) Switch to ECONOMY class flights if using business/first class. "
-                f"2) Pick a cheaper hotel (max {int(user_budget * 0.45 / max(state['plan']['num_days'] - 1, 1)):,}/night). "
+                f"2) Pick a cheaper hotel (max {int(user_budget * 0.45 / max(state['plan']['num_days'], 1)):,}/night). "
                 f"3) Reduce activities costs. "
                 f"The final total MUST be LESS than {int(user_budget):,}."
             )
@@ -2238,7 +2394,7 @@ def should_revise(state: GraphState) -> Literal["revise", "finalize"]:
             remaining_pct = (remaining / user_budget) * 100
             travel_style = state['plan'].get('travel_style', 'mid-range').lower()
             num_days = state['plan'].get('num_days', 1)
-            num_nights = max(num_days - 1, 1)
+            num_nights = max(num_days, 1)  # num_days = nights booked
             num_travelers = state.get('num_travelers', 1)
 
             # Thresholds: luxury >35% remaining, mid-range >45% remaining
@@ -2264,14 +2420,20 @@ def should_revise(state: GraphState) -> Literal["revise", "finalize"]:
                 target_hotel_per_night = int(user_budget * 0.45 / num_nights)
                 target_transport_per_person = int(user_budget * 0.35 / max(num_travelers, 1))
 
+                remaining_to_fill = int(user_budget * 0.90 - estimated)
                 review["fix_instructions"].insert(0,
                     f"BUDGET UNDERUTILIZED: Only {int(estimated):,} of {int(user_budget):,} used "
-                    f"({remaining_pct:.0f}% remaining). This is a '{travel_style}' trip — "
-                    f"use more of the budget for a better experience. "
-                    f"UPGRADE: 1) Pick a better hotel — budget allows up to {target_hotel_per_night:,}/night. "
-                    f"2) Pick better flights — budget allows up to {target_transport_per_person:,}/person. "
-                    f"3) Add more/better activities. "
-                    f"Target total should be {int(user_budget * 0.75):,}-{int(user_budget * 0.95):,}."
+                    f"({remaining_pct:.0f}% remaining ≈ {int(remaining):,} unused). This is a '{travel_style}' trip — "
+                    f"the user wants the budget USED on a great trip, not left over. "
+                    f"FILL the remaining ~{max(remaining_to_fill, 0):,} with REAL, NAMED experiences "
+                    f"(do NOT just inflate hotel/flight prices): "
+                    f"1) Add premium dining — named restaurants with price/meal, one nice dinner most evenings. "
+                    f"2) Add excursions/day-trips — named operator + location + price/person, one per full day. "
+                    f"3) Add outings/add-ons — spa, private boat, sunset cruise, guided tours, premium tickets. "
+                    f"4) Optionally upgrade the hotel (up to {target_hotel_per_night:,}/night) or flights "
+                    f"(up to {target_transport_per_person:,}/person) if that genuinely improves the trip. "
+                    f"Spread everything across the daily itinerary and add the costs to the budget table. "
+                    f"Target total: {int(user_budget * 0.85):,}-{int(user_budget * 0.95):,} (stay UNDER {int(user_budget):,})."
                 )
                 state["review"] = review
     # ══════════════════════════════════════════════════════════════
