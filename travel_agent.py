@@ -20,6 +20,7 @@ Setup:
 """
 
 import os
+import re
 import json
 from typing import List, Dict, Any, Optional, Literal
 from typing_extensions import TypedDict
@@ -159,6 +160,8 @@ class GraphState(TypedDict):
     review: Optional[Dict[str, Any]]
     iteration: int
     max_iterations: int
+    user_budget: Optional[float]              # ← CODE-LEVEL: exact budget from form
+    num_travelers: int                        # ← CODE-LEVEL: exact travelers from form
 
 
 # ─────────────────────────────────────────────
@@ -629,15 +632,18 @@ IMPORTANT: Do NOT repeat or mention hotels anywhere else in the plan.
 FOR FLIGHTS/TRANSPORT — present ALL options in a table ONCE ONLY (NO links):
 | وسيلة النقل | المدة | التكلفة/فرد | الإجمالي (عدد المسافرين) | الملاحظات |
 |------------|-------|------------|------------------------|-----------|
-| الخيار 1 (الأفضل) | Xhr | X ج.م | X × عدد = Y ج.م | رحلة رايح وجاي، بيزنس |
-| الخيار 2 | Xhr | X ج.م | X × عدد = Y ج.م | رايح وجاي، اقتصادي |
+| الخيار 1 (الأفضل) | Xhr | X ج.م | X × عدد = Y ج.م | رحلة رايح وجاي، اقتصادي |
+| الخيار 2 | Xhr | X ج.م | X × عدد = Y ج.م | رايح وجاي، اقتصادي شركة أخرى |
 | الخيار 3 (الأرخص) | Xhr | X ج.م | X × عدد = Y ج.م | رايح وجاي |
 CRITICAL RULES:
+- ALWAYS show EXACTLY 3 transport options. No more, no less. If flight research has fewer, add bus/private car options.
 - ALWAYS show price PER PERSON and TOTAL for all travelers.
 - If 3 travelers and flight costs 8,000/person, write "8,000 ج.م" under التكلفة/فرد and "24,000 ج.م" under الإجمالي.
 - ALWAYS specify if the price is round trip (رايح وجاي) or one-way.
 - Show ALL 3 transport options, ordered from most expensive/comfortable to cheapest.
-- The AI recommendation line below the table should match the travel style.
+- ⚠️ BUDGET CHECK: If ANY option's الإجمالي exceeds 35% of user's total budget, DO NOT recommend it.
+  Instead, recommend the most expensive option that stays under 35% of budget.
+- The AI recommendation must pick an option where الإجمالي ≤ 35% of total budget.
 - Write: "🏆 توصية الـ AI: [الخيار] — لأن [السبب]"
 IMPORTANT: Do NOT repeat transport options anywhere else.
 
@@ -1149,6 +1155,130 @@ def _parse_notes(text: str) -> List[str]:
     return [line.strip("- ").strip() for line in text.split("\n") if line.strip()]
 
 
+def _extract_numbers_from_text(text: str) -> List[float]:
+    """Extract all numbers from text, handling Arabic/English formats like 50,000 or 50000."""
+    numbers = []
+    for match in re.findall(r'[\d,]+(?:\.\d+)?', text):
+        try:
+            numbers.append(float(match.replace(',', '')))
+        except ValueError:
+            pass
+    return numbers
+
+
+def _extract_total_from_draft(draft: str, user_budget: float) -> dict:
+    """
+    CODE-LEVEL budget extraction from the draft text.
+    Looks for total cost patterns in Arabic and English.
+    Returns: {"estimated_total": float or None, "is_over_budget": bool, "overage": float}
+    """
+    if not draft or not user_budget:
+        return {"estimated_total": None, "is_over_budget": False, "overage": 0}
+
+    total = None
+
+    # ── Pattern 1: Arabic total patterns ──
+    # "الإجمالي الكلي: 108,000" or "الإجمالي الكلي = 108,000"
+    arabic_total_patterns = [
+        r'الإجمالي\s*الكلي[:\s=]+\s*([\d,]+)',
+        r'إجمالي\s*التكاليف[:\s=]+\s*([\d,]+)',
+        r'المجموع\s*الكلي[:\s=]+\s*([\d,]+)',
+        r'Total\s*Cost[:\s=]+\s*([\d,]+)',
+        r'الإجمالي[:\s=]+\s*([\d,]+(?:\.\d+)?)\s*(?:ج\.م|EGP|AED|USD|SAR|EUR|GBP|د\.إ|ر\.س)',
+    ]
+
+    for pattern in arabic_total_patterns:
+        match = re.search(pattern, draft, re.IGNORECASE)
+        if match:
+            try:
+                val = float(match.group(1).replace(',', ''))
+                # Sanity: total should be > 1000 (not a percentage or day count)
+                if val > 1000:
+                    total = val
+                    break
+            except ValueError:
+                pass
+
+    # ── Pattern 2: Look in budget table (HTML or markdown) ──
+    if total is None:
+        # HTML table: look for row with "الإجمالي" and a number
+        table_patterns = [
+            r'الإجمالي\s*الكلي.*?<td[^>]*>\s*([\d,]+)',
+            r'Total.*?<td[^>]*>\s*([\d,]+)',
+            r'\|\s*الإجمالي\s*الكلي\s*\|\s*([\d,]+)',
+        ]
+        for pattern in table_patterns:
+            match = re.search(pattern, draft, re.IGNORECASE | re.DOTALL)
+            if match:
+                try:
+                    val = float(match.group(1).replace(',', ''))
+                    if val > 1000:
+                        total = val
+                        break
+                except ValueError:
+                    pass
+
+    # ── Pattern 3: Sum approach — look for transport + hotel + activities ──
+    if total is None:
+        transport_total = None
+        hotel_total = None
+        activities_total = None
+
+        for pattern in [r'إجمالي\s*(?:تكلفة\s*)?النقل[:\s=]+\s*([\d,]+)', r'transport[:\s=]+\s*([\d,]+)']:
+            m = re.search(pattern, draft, re.IGNORECASE)
+            if m:
+                try: transport_total = float(m.group(1).replace(',', ''))
+                except: pass
+                break
+
+        for pattern in [r'إجمالي\s*(?:تكلفة\s*)?الفناد[قك][:\s=]+\s*([\d,]+)', r'hotel[:\s]*total[:\s=]+\s*([\d,]+)']:
+            m = re.search(pattern, draft, re.IGNORECASE)
+            if m:
+                try: hotel_total = float(m.group(1).replace(',', ''))
+                except: pass
+                break
+
+        parts = [x for x in [transport_total, hotel_total, activities_total] if x]
+        if len(parts) >= 2:
+            total = sum(parts)
+
+    is_over = total is not None and total > user_budget
+    overage = (total - user_budget) if is_over and total else 0
+
+    return {"estimated_total": total, "is_over_budget": is_over, "overage": overage}
+
+
+def _generate_budget_notes_from_draft(draft: str, user_budget: float, currency: str) -> List[str]:
+    """
+    Generate budget_notes directly FROM the draft text, so tab4 always matches tab1.
+    This replaces the Budget agent's separate output for the budget tab.
+    """
+    if not draft:
+        return []
+
+    notes = []
+
+    # Extract key cost sections from the draft
+    transport_match = re.search(r'إجمالي\s*(?:تكلفة\s*)?النقل[:\s=]+\s*([\d,]+)', draft)
+    hotel_match = re.search(r'إجمالي\s*(?:تكلفة\s*)?الفناد[قك].*?[:\s=]+\s*([\d,]+)', draft)
+    total_match = re.search(r'الإجمالي\s*الكلي[:\s=]+\s*([\d,]+)', draft)
+    remaining_match = re.search(r'الميزانية\s*المتبقية[:\s=]+\s*(-?[\d,]+)', draft)
+
+    if transport_match:
+        notes.append(f"تكلفة النقل: {transport_match.group(1)} {currency}")
+    if hotel_match:
+        notes.append(f"تكلفة الفنادق: {hotel_match.group(1)} {currency}")
+    if total_match:
+        notes.append(f"الإجمالي الكلي: {total_match.group(1)} {currency}")
+    if remaining_match:
+        notes.append(f"الميزانية المتبقية: {remaining_match.group(1)} {currency}")
+
+    if user_budget:
+        notes.append(f"ميزانية المستخدم: {int(user_budget):,} {currency}")
+
+    return notes
+
+
 # ─────────────────────────────────────────────
 # 6. Agent Nodes
 # ─────────────────────────────────────────────
@@ -1167,31 +1297,28 @@ def flight_node(state: GraphState) -> GraphState:
     agent = _make_research_agent(FLIGHT_SYSTEM)
     travel_style = state['plan'].get('travel_style', 'mid-range')
 
-    # ── Extract budget from the question ──
-    total_budget = "unknown"
-    num_travelers = 1
-    for line in state['question'].split('\n'):
-        line_stripped = line.strip().lower()
-        if 'budget' in line_stripped or 'الميزانية' in line_stripped or 'ميزانية' in line_stripped:
-            if ':' in line_stripped:
-                total_budget = line_stripped.split(':', 1)[1].strip()
-        if 'number of travelers' in line_stripped or 'عدد المسافرين' in line_stripped:
-            if ':' in line_stripped:
-                val = line_stripped.split(':', 1)[1].strip()
-                try:
-                    num_travelers = int(val)
-                except ValueError:
-                    pass
+    # ── Use structured budget data from GraphState ──
+    total_budget = state.get('user_budget') or 0
+    num_travelers = state.get('num_travelers', 1)
+    max_transport = int(total_budget * 0.35) if total_budget else "unknown"
+    max_per_person = int(max_transport / num_travelers) if total_budget and num_travelers else "unknown"
 
     output = _invoke_agent(agent,
         f"Find transport for: {state['question']}\nDestination: {state['plan']['destination']}\nDates: {state['plan']['travel_dates']}\nTravel style: {travel_style}\n\n"
-        f"═══ BUDGET CONTEXT ═══\n"
-        f"TOTAL TRIP BUDGET: {total_budget}\n"
+        f"╔══════════════════════════════════════════════════════════════╗\n"
+        f"║  BUDGET HARD LIMITS — VIOLATING THESE = PLAN REJECTION     ║\n"
+        f"╚══════════════════════════════════════════════════════════════╝\n"
+        f"TOTAL TRIP BUDGET: {int(total_budget) if total_budget else 'unknown'}\n"
         f"Number of travelers: {num_travelers}\n"
-        f"Transport should NOT exceed 40% of total budget.\n"
-        f"If business class would exceed 40% of budget, recommend economy instead.\n"
-        f"═══════════════════════\n\n"
-        f"IMPORTANT: Travel style is '{travel_style}' — recommend transport that matches this style BUT stays within budget constraints. ALWAYS present 3 transport options."
+        f"MAXIMUM transport budget (35% of total): {max_transport}\n"
+        f"MAXIMUM per person: {max_per_person}\n"
+        f"═══════════════════════════════════════════════════════════════\n"
+        f"If business/first class for {num_travelers} people exceeds {max_transport}, DO NOT recommend it.\n"
+        f"Pick economy class on a good airline instead.\n"
+        f"'Luxury' travel style does NOT mean business class if it blows the budget.\n"
+        f"'Luxury' means: best economy seat, good airline, convenient times.\n\n"
+        f"ALWAYS present exactly 3 transport options, cheapest to most expensive.\n"
+        f"Every option MUST cost less than {max_transport} total for {num_travelers} people."
     )
     state["flight_notes"] = _parse_notes(output)
     return state
@@ -1458,6 +1585,48 @@ def writer_node(state: GraphState) -> GraphState:
     # ← ORCHESTRATOR PATTERN: Writer uses coordinator_brief as PRIMARY source
     coordinator_brief = state.get('coordinator_brief', '')
 
+    user_budget = state.get('user_budget') or 0
+    num_travelers = state.get('num_travelers', 1)
+    max_transport = int(user_budget * 0.35) if user_budget else 0
+    max_hotel = int(user_budget * 0.45) if user_budget else 0
+    num_days_for_hotel = max(num_days - 1, 1)  # nights = days - 1
+    max_hotel_per_night = int(max_hotel / num_days_for_hotel) if max_hotel else 0
+
+    # ══════════════════════════════════════════════════════════════
+    # CODE-LEVEL: Scan flight_notes for over-budget options and BLOCK them
+    # ══════════════════════════════════════════════════════════════
+    budget_warnings = []
+    if user_budget and max_transport:
+        flight_text = ' '.join(state.get('flight_notes', []))
+        coord_text = state.get('coordinator_brief', '') or ''
+        combined_text = flight_text + ' ' + coord_text
+
+        # Find any mention of business/first class with prices
+        for cls_name in ['business', 'بيزنس', 'Business Class', 'first class', 'درجة أولى', 'First Class']:
+            if cls_name.lower() in combined_text.lower():
+                # Try to find associated price
+                prices_nearby = re.findall(r'(\d[\d,]*)\s*(?:ج\.م|EGP|AED|USD|SAR|EUR|د\.إ|ر\.س)', combined_text)
+                for p in prices_nearby:
+                    try:
+                        price_val = float(p.replace(',', ''))
+                        total_for_all = price_val * num_travelers
+                        if total_for_all > max_transport and price_val > 5000:
+                            budget_warnings.append(
+                                f"⛔ BLOCKED: {cls_name} at {int(price_val):,}/person × {num_travelers} = {int(total_for_all):,} "
+                                f"EXCEEDS transport limit of {max_transport:,}. USE ECONOMY CLASS INSTEAD."
+                            )
+                    except ValueError:
+                        pass
+
+    budget_block_text = ""
+    if budget_warnings:
+        budget_block_text = "\n╔══════════════════════════════════════════════════╗\n"
+        budget_block_text += "║  ⛔ BLOCKED TRANSPORT OPTIONS — DO NOT USE THESE  ║\n"
+        budget_block_text += "╚══════════════════════════════════════════════════╝\n"
+        budget_block_text += "\n".join(budget_warnings)
+        budget_block_text += "\n\nYou MUST recommend ECONOMY class instead. DO NOT mention business/first class as the AI recommendation.\n"
+        print(f"[CODE-LEVEL] Budget warnings generated: {budget_warnings}")
+
     resp = llm.invoke([
         SystemMessage(content=WRITER_SYSTEM),
         HumanMessage(content=f"""Question: {state['question']}
@@ -1466,6 +1635,22 @@ def writer_node(state: GraphState) -> GraphState:
 NUMBER OF DAYS: {num_days} — write EXACTLY {num_days} day(s) in the itinerary. Not {num_days + 1}, not {num_days - 1}.
 TRAVEL STYLE: {travel_style} — ALL recommendations must match this style.
 ══════════════════════════════════
+
+╔══════════════════════════════════════════════════════════════╗
+║  BUDGET HARD LIMITS — YOUR PLAN WILL BE REJECTED IF EXCEEDED ║
+╚══════════════════════════════════════════════════════════════╝
+TOTAL BUDGET: {int(user_budget):,} (ABSOLUTE MAXIMUM — plan total MUST be LESS)
+Number of travelers: {num_travelers}
+MAX transport (35%): {max_transport:,} (for ALL {num_travelers} travelers combined)
+MAX per person transport: {int(max_transport / max(num_travelers, 1)):,}
+MAX hotel total (45%): {max_hotel:,} (for ALL {num_days_for_hotel} nights combined)
+MAX hotel per night: {max_hotel_per_night:,}
+
+⚠️ MATH CHECK BEFORE WRITING:
+Transport (per person × {num_travelers}) + Hotel ({max_hotel_per_night:,}/night × {num_days_for_hotel} nights) + Activities MUST < {int(user_budget):,}
+If business class × {num_travelers} > {max_transport:,} → USE ECONOMY CLASS.
+If hotel/night > {max_hotel_per_night:,} → pick a cheaper hotel.
+{budget_block_text}
 
 Plan: {json.dumps(state['plan'], indent=2)}
 Output headings: {headings}
@@ -1510,6 +1695,9 @@ Budget Research:
 def reviewer_node(state: GraphState) -> GraphState:
     num_days = state['plan']['num_days']
     travel_style = state['plan'].get('travel_style', 'mid-range')
+    user_budget = state.get('user_budget') or 0
+    num_travelers = state.get('num_travelers', 1)
+
     structured_reviewer = llm.with_structured_output(ReviewResult)
     review_obj = structured_reviewer.invoke([
         SystemMessage(content=REVIEWER_SYSTEM),
@@ -1520,6 +1708,19 @@ def reviewer_node(state: GraphState) -> GraphState:
 EXPECTED NUM_DAYS: {num_days} — count the days in the draft and flag if different.
 EXPECTED TRAVEL STYLE: {travel_style} — flag any recommendation that doesn't match.
 ══════════════════════════════════
+
+╔══════════════════════════════════════════════════════════════╗
+║  BUDGET VALIDATION — EXACT NUMBERS FROM USER                 ║
+╚══════════════════════════════════════════════════════════════╝
+USER'S EXACT BUDGET: {int(user_budget):,}
+NUMBER OF TRAVELERS: {num_travelers}
+MAX TRANSPORT (35%): {int(user_budget * 0.35):,}
+MAX HOTEL (45%): {int(user_budget * 0.45):,}
+
+CHECK: Does the draft's total cost exceed {int(user_budget):,}?
+If YES → set is_over_budget=True, score MUST be < 50.
+CHECK: Does transport exceed {int(user_budget * 0.35):,}?
+If YES → flag it in fix_instructions.
 
 Draft to validate:
 {state['draft']}
@@ -1542,9 +1743,40 @@ Budget: {chr(10).join('- ' + n for n in state.get('budget_notes', []))}
 def finalizer_node(state: GraphState) -> GraphState:
     num_days = state['plan']['num_days']
     travel_style = state['plan'].get('travel_style', 'mid-range')
+    user_budget = state.get('user_budget') or 0
+    num_travelers = state.get('num_travelers', 1)
+    max_transport = int(user_budget * 0.35) if user_budget else 0
+    max_hotel = int(user_budget * 0.45) if user_budget else 0
+    num_nights = max(num_days - 1, 1)
+    max_hotel_per_night = int(max_hotel / num_nights) if max_hotel else 0
 
     # ← ORCHESTRATOR PATTERN: Finalizer uses coordinator_brief as PRIMARY source
     coordinator_brief = state.get('coordinator_brief', '')
+
+    # ══════════════════════════════════════════════════════════════
+    # If reviewer flagged _force_budget_fix (max iterations reached
+    # but still over budget), add EXTRA strict instructions
+    # ══════════════════════════════════════════════════════════════
+    force_fix = ""
+    review_data = state.get("review") or {}
+    if review_data.get("_force_budget_fix"):
+        budget_result = _extract_total_from_draft(state.get("draft", ""), user_budget)
+        force_fix = f"""
+╔══════════════════════════════════════════════════════════════════════╗
+║  ⛔⛔⛔ EMERGENCY BUDGET FIX REQUIRED ⛔⛔⛔                         ║
+║  The plan is STILL over budget after {state['iteration']} revision attempts.  ║
+║  Current total: ~{int(budget_result['estimated_total']):,} vs budget: {int(user_budget):,}     ║
+║  Over by: {int(budget_result['overage']):,}                                     ║
+║                                                                      ║
+║  YOU MUST FIX THIS IN YOUR FINAL OUTPUT:                             ║
+║  1) ALL flights MUST be ECONOMY class                                ║
+║  2) Hotel per night MUST be ≤ {max_hotel_per_night:,}                          ║
+║  3) Transport total (all travelers) MUST be ≤ {max_transport:,}                ║
+║  4) Recalculate ALL totals after making changes                      ║
+║  5) Final total MUST be < {int(user_budget):,}                                 ║
+╚══════════════════════════════════════════════════════════════════════╝
+"""
+        print(f"[CODE-LEVEL] Force budget fix in finalizer: over by {int(budget_result['overage']):,}")
 
     resp = llm.invoke([
         SystemMessage(content=FINALIZER_SYSTEM),
@@ -1554,6 +1786,17 @@ def finalizer_node(state: GraphState) -> GraphState:
 NUMBER OF DAYS: {num_days} — write EXACTLY {num_days} day(s). Count them before finishing.
 TRAVEL STYLE: {travel_style} — every recommendation must match this style.
 ══════════════════════════════════
+
+╔══════════════════════════════════════════════════════════════╗
+║  BUDGET HARD LIMIT — TOTAL MUST BE LESS THAN {int(user_budget):,}        ║
+║  Number of travelers: {num_travelers}                                    ║
+║  Transport max (35%): {max_transport:,} (ALL travelers combined)         ║
+║  Transport max per person: {int(max_transport / max(num_travelers, 1)):,}║
+║  Hotel max (45%): {max_hotel:,} (ALL {num_nights} nights combined)       ║
+║  Hotel max per night: {max_hotel_per_night:,}                            ║
+║  If draft total > {int(user_budget):,}, FIX IT by picking cheaper options.║
+╚══════════════════════════════════════════════════════════════╝
+{force_fix}
 
 Plan: {json.dumps(state['plan'], indent=2)}
 
@@ -1578,7 +1821,58 @@ Current Draft: {state.get('draft', '')}
 Review: {json.dumps(state.get('review'), indent=2) if state.get('review') else 'None'}
 """),
     ]).content
+
+    # ══════════════════════════════════════════════════════════════
+    # CODE-LEVEL POST-CHECK: If finalizer output is STILL over
+    # budget, do a second pass with even stricter instructions
+    # ══════════════════════════════════════════════════════════════
+    if user_budget:
+        final_check = _extract_total_from_draft(resp, user_budget)
+        if final_check["is_over_budget"] and final_check["overage"] > user_budget * 0.05:
+            print(f"[CODE-LEVEL] Finalizer output STILL over budget by {int(final_check['overage']):,} — forcing second pass")
+            resp2 = llm.invoke([
+                SystemMessage(content=FINALIZER_SYSTEM),
+                HumanMessage(content=f"""The draft below EXCEEDS the budget of {int(user_budget):,}.
+Current estimated total: {int(final_check['estimated_total']):,} (over by {int(final_check['overage']):,}).
+
+MANDATORY FIXES — apply ALL of these:
+1. Change ALL flights to ECONOMY class. Max transport budget: {max_transport:,} for {num_travelers} travelers.
+   That means max {int(max_transport / max(num_travelers, 1)):,} per person for flights.
+2. Pick a hotel at max {max_hotel_per_night:,}/night (total hotel max: {max_hotel:,}).
+3. Reduce activities/entertainment budget.
+4. Recalculate the budget table with CORRECT numbers that sum to LESS than {int(user_budget):,}.
+
+REWRITE the entire draft with these cheaper options. Keep the same format and structure.
+Travel style "{travel_style}" means quality experience WITHIN budget, not exceeding it.
+
+Draft to fix:
+{resp}
+"""),
+            ]).content
+            # Only use the second pass if it's actually under budget or closer
+            check2 = _extract_total_from_draft(resp2, user_budget)
+            if not check2["is_over_budget"] or check2["overage"] < final_check["overage"]:
+                resp = resp2
+                print(f"[CODE-LEVEL] Second pass improved budget: {int(check2['estimated_total']):,} vs {int(final_check['estimated_total']):,}")
+            else:
+                print(f"[CODE-LEVEL] Second pass didn't improve — keeping first version")
+
     state["draft"] = resp
+
+    # ══════════════════════════════════════════════════════════════
+    # SYNC budget_notes FROM the final draft — so tab4 matches tab1
+    # ══════════════════════════════════════════════════════════════
+    currency = "ج.م"  # default
+    for sym in ['ج.م', 'EGP', 'AED', 'د.إ', 'USD', '$', 'SAR', 'ر.س', 'EUR', '€', 'GBP', '£']:
+        if sym in resp:
+            currency = sym
+            break
+
+    synced_notes = _generate_budget_notes_from_draft(resp, user_budget, currency)
+    if synced_notes:
+        state["budget_notes"] = synced_notes
+        print(f"[CODE-LEVEL] Budget notes synced from draft: {synced_notes}")
+
     return state
 
 
@@ -1590,8 +1884,54 @@ def should_revise(state: GraphState) -> Literal["revise", "finalize"]:
     review = state["review"]
     score = review["score"]
 
+    # ══════════════════════════════════════════════════════════════
+    # CODE-LEVEL BUDGET CHECK — runs BEFORE max_iterations check
+    # so an over-budget plan NEVER passes through unchecked
+    # ══════════════════════════════════════════════════════════════
+    user_budget = state.get("user_budget")
+    is_over_budget = False
+    if user_budget and state.get("draft"):
+        budget_result = _extract_total_from_draft(state["draft"], user_budget)
+        if budget_result["is_over_budget"]:
+            is_over_budget = True
+            overage = budget_result["overage"]
+            estimated = budget_result["estimated_total"]
+            print(f"[CODE-LEVEL] OVER BUDGET DETECTED: total={estimated}, budget={user_budget}, overage={overage}")
+            # ── Force the review to reflect over-budget ──
+            if "budget_check" not in review:
+                review["budget_check"] = {}
+            review["budget_check"]["is_over_budget"] = True
+            review["budget_check"]["overage_amount"] = overage
+            review["budget_check"]["estimated_total"] = estimated
+            review["budget_check"]["user_budget"] = user_budget
+            # ── Force score below 80 ──
+            review["score"] = min(review["score"], 50)
+            score = review["score"]
+            # ── Add specific fix instructions ──
+            if "fix_instructions" not in review:
+                review["fix_instructions"] = []
+            review["fix_instructions"].insert(0,
+                f"CRITICAL: Plan is OVER BUDGET by {int(overage):,}. "
+                f"Total={int(estimated):,} but budget={int(user_budget):,}. "
+                f"You MUST: 1) Switch to ECONOMY class flights if using business/first class. "
+                f"2) Pick a cheaper hotel (max {int(user_budget * 0.45 / max(state['plan']['num_days'] - 1, 1)):,}/night). "
+                f"3) Reduce activities costs. "
+                f"The final total MUST be LESS than {int(user_budget):,}."
+            )
+            state["review"] = review
+    # ══════════════════════════════════════════════════════════════
+
+    # Max iterations — but if STILL over budget on last iteration,
+    # we flag it so finalizer can handle it
     if state["iteration"] >= state["max_iterations"]:
+        if is_over_budget:
+            print(f"[CODE-LEVEL] Max iterations reached but STILL over budget — flagging for finalizer")
+            state["review"]["_force_budget_fix"] = True
         return "finalize"
+
+    # If over budget, force revision (we have iterations left)
+    if is_over_budget:
+        return "revise"
 
     budget = review.get("budget_check", {})
     visa = review.get("visa_check", {})
@@ -1604,7 +1944,6 @@ def should_revise(state: GraphState) -> Literal["revise", "finalize"]:
         or budget.get("budget_underutilized", False)
         or not visa.get("visa_info_present", True)
         or visa.get("wrongly_marked_domestic", False)
-        # ── New critical checks ──
         or not transport.get("transport_price_realistic", True)
         or not transport.get("price_matches_style", True)
         or not hotel_order.get("ordered_expensive_first", True)
@@ -1700,7 +2039,9 @@ if __name__ == "__main__":
         "draft": None,
         "review": None,
         "iteration": 0,
-        "max_iterations": 2,
+        "max_iterations": 3,
+        "user_budget": 3000.0,
+        "num_travelers": 1,
     }
 
     print("\n⏳ Running multi-agent travel planner...\n")
