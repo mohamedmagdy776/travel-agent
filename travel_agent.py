@@ -49,7 +49,8 @@ tools = [search_tool]
 # 2. Structured Outputs
 # ─────────────────────────────────────────────
 class TravelPlan(BaseModel):
-    destination: str = Field(..., description="Travel destination")
+    destination: str = Field(..., description="Travel destination (city/resort name)")
+    destination_country: str = Field(..., description="Country where the destination is located (e.g. 'Egypt' for El Gouna, 'Saudi Arabia' for Jeddah)")
     travel_dates: str = Field(..., description="Proposed travel dates")
     num_days: int = Field(..., description="Number of travel days — must match EXACTLY what the user requested")
     travel_style: str = Field("mid-range", description="Travel style: luxury, mid-range, or budget")
@@ -167,9 +168,20 @@ class GraphState(TypedDict):
 PLANNER_SYSTEM = """You are the Planner agent for a travel planning system.
 Given a user's travel request:
 1. Identify destination, dates, number of days, and traveler preferences.
-2. Break planning into ordered steps.
-3. Identify key risks (visa, weather, budget, safety).
-4. Define output headings for the final itinerary.
+2. Identify the COUNTRY where the destination is located (destination_country).
+   Examples: El Gouna → "Egypt", شرم الشيخ → "Egypt", جدة → "Saudi Arabia", دبي → "UAE", بالي → "Indonesia"
+3. Break planning into ordered steps.
+4. Identify key risks (visa, weather, budget, safety).
+5. Define output headings for the final itinerary.
+
+CRITICAL — destination_country:
+- This field identifies WHICH COUNTRY the destination city/resort is in.
+- "الجونة" (El Gouna) is in Egypt → destination_country = "Egypt"
+- "شرم الشيخ" (Sharm El Sheikh) is in Egypt → destination_country = "Egypt"
+- "الغردقة" (Hurghada) is in Egypt → destination_country = "Egypt"
+- "دبي" (Dubai) is in UAE → destination_country = "UAE"
+- "جدة" (Jeddah) is in Saudi Arabia → destination_country = "Saudi Arabia"
+- This is used to determine if the traveler needs a visa (different country = visa needed).
 
 CRITICAL — num_days:
 - The user specifies EXACTLY how many days they want. Extract this number precisely.
@@ -1047,134 +1059,68 @@ def hotel_node(state: GraphState) -> GraphState:
 def visa_node(state: GraphState) -> GraphState:
     agent = _make_research_agent(VISA_SYSTEM)
 
-    # ── Extract nationality explicitly from the question ──
+    # ── Extract nationality from the question ──
     nationality = "unknown"
     for line in state['question'].split('\n'):
         line_stripped = line.strip()
         if 'nationality' in line_stripped.lower() or 'جنسي' in line_stripped:
             if ':' in line_stripped:
                 nationality = line_stripped.split(':', 1)[1].strip()
-            elif '：' in line_stripped:
-                nationality = line_stripped.split('：', 1)[1].strip()
             break
 
     destination = state['plan']['destination']
+    # ── destination_country comes from the Planner (TravelPlan model) ──
+    destination_country = state['plan'].get('destination_country', '').strip()
 
-    # ── Map nationality to country ──
-    nationality_country_map = {
-        'مصري': 'egypt', 'egyptian': 'egypt', 'مصرية': 'egypt',
-        'سعودي': 'saudi arabia', 'saudi': 'saudi arabia', 'سعودية': 'saudi arabia',
-        'إماراتي': 'uae', 'emirati': 'uae', 'إماراتية': 'uae',
-        'أردني': 'jordan', 'jordanian': 'jordan',
-        'لبناني': 'lebanon', 'lebanese': 'lebanon',
-        'عراقي': 'iraq', 'iraqi': 'iraq',
-        'كويتي': 'kuwait', 'kuwaiti': 'kuwait', 'كويتية': 'kuwait',
-        'بحريني': 'bahrain', 'bahraini': 'bahrain',
-        'عماني': 'oman', 'omani': 'oman',
-        'قطري': 'qatar', 'qatari': 'qatar',
-        'تونسي': 'tunisia', 'tunisian': 'tunisia',
-        'مغربي': 'morocco', 'moroccan': 'morocco',
-        'جزائري': 'algeria', 'algerian': 'algeria',
-        'سوري': 'syria', 'syrian': 'syria',
-        'أمريكي': 'usa', 'american': 'usa',
-        'بريطاني': 'uk', 'british': 'uk',
-        'فرنسي': 'france', 'french': 'france',
-        'ألماني': 'germany', 'german': 'germany',
+    # ── Map nationality to country name (small map — just nationalities) ──
+    nationality_to_country = {
+        'مصري': 'Egypt', 'egyptian': 'Egypt', 'مصرية': 'Egypt',
+        'سعودي': 'Saudi Arabia', 'saudi': 'Saudi Arabia', 'سعودية': 'Saudi Arabia',
+        'إماراتي': 'UAE', 'emirati': 'UAE',
+        'أردني': 'Jordan', 'jordanian': 'Jordan',
+        'لبناني': 'Lebanon', 'lebanese': 'Lebanon',
+        'عراقي': 'Iraq', 'iraqi': 'Iraq',
+        'كويتي': 'Kuwait', 'kuwaiti': 'Kuwait', 'كويتية': 'Kuwait',
+        'بحريني': 'Bahrain', 'bahraini': 'Bahrain',
+        'عماني': 'Oman', 'omani': 'Oman',
+        'قطري': 'Qatar', 'qatari': 'Qatar',
+        'تونسي': 'Tunisia', 'tunisian': 'Tunisia',
+        'مغربي': 'Morocco', 'moroccan': 'Morocco',
+        'جزائري': 'Algeria', 'algerian': 'Algeria',
+        'سوري': 'Syria', 'syrian': 'Syria',
+        'أمريكي': 'USA', 'american': 'USA',
+        'بريطاني': 'UK', 'british': 'UK',
     }
-    nat_lower = nationality.lower().strip()
-    traveler_country = nationality_country_map.get(nat_lower, 'unknown')
+    traveler_country = nationality_to_country.get(nationality.lower().strip(), '')
 
-    # ── Map destination (city/resort) to country — DETERMINISTIC ──
-    # This is critical: the destination from the plan is a CITY name, not a country.
-    # We must map it to the correct country to compare with traveler's country.
-    destination_country_keywords = {
-        'egypt': [
-            'مصر', 'egypt', 'cairo', 'القاهرة', 'sharm', 'شرم', 'hurghada', 'الغردقة',
-            'luxor', 'الأقصر', 'aswan', 'أسوان', 'dahab', 'دهب', 'marsa alam', 'مرسى علم',
-            'el gouna', 'الجونة', 'ain sokhna', 'العين السخنة', 'سهل حشيش', 'sahl hasheesh',
-            'alexandria', 'الإسكندرية', 'siwa', 'سيوة', 'nuweiba', 'نويبع', 'taba', 'طابا',
-            'marsa matruh', 'مرسى مطروح', 'ras sudr', 'رأس سدر', 'port said', 'بورسعيد',
-            'soma bay', 'سوما باي', 'makadi', 'مكادي', 'safaga', 'سفاجا', 'north coast', 'الساحل الشمالي',
-        ],
-        'saudi arabia': [
-            'السعودية', 'saudi', 'riyadh', 'الرياض', 'jeddah', 'جدة', 'mecca', 'مكة',
-            'medina', 'المدينة', 'abha', 'أبها', 'taif', 'الطائف', 'dammam', 'الدمام',
-            'khobar', 'الخبر', 'neom', 'نيوم', 'al ula', 'العلا', 'yanbu', 'ينبع',
-        ],
-        'uae': [
-            'الإمارات', 'uae', 'dubai', 'دبي', 'abu dhabi', 'أبو ظبي', 'sharjah', 'الشارقة',
-            'ras al khaimah', 'رأس الخيمة', 'ajman', 'عجمان', 'fujairah', 'الفجيرة',
-        ],
-        'jordan': ['الأردن', 'jordan', 'amman', 'عمان', 'petra', 'البتراء', 'aqaba', 'العقبة', 'dead sea'],
-        'lebanon': ['لبنان', 'lebanon', 'beirut', 'بيروت'],
-        'turkey': ['تركيا', 'turkey', 'istanbul', 'إسطنبول', 'antalya', 'أنطاليا', 'bodrum', 'بودروم', 'trabzon', 'طرابزون'],
-        'morocco': ['المغرب', 'morocco', 'marrakech', 'مراكش', 'casablanca', 'الدار البيضاء', 'fes', 'فاس', 'tangier', 'طنجة'],
-        'tunisia': ['تونس', 'tunisia', 'tunis', 'sousse', 'سوسة', 'hammamet', 'الحمامات'],
-        'qatar': ['قطر', 'qatar', 'doha', 'الدوحة'],
-        'kuwait': ['الكويت', 'kuwait'],
-        'bahrain': ['البحرين', 'bahrain', 'manama', 'المنامة'],
-        'oman': ['عُمان', 'عمان', 'oman', 'muscat', 'مسقط', 'salalah', 'صلالة'],
-        'iraq': ['العراق', 'iraq', 'baghdad', 'بغداد', 'erbil', 'أربيل'],
-        'usa': ['أمريكا', 'usa', 'united states', 'new york', 'los angeles', 'miami', 'las vegas'],
-        'uk': ['بريطانيا', 'uk', 'united kingdom', 'london', 'لندن', 'england'],
-        'france': ['فرنسا', 'france', 'paris', 'باريس'],
-        'germany': ['ألمانيا', 'germany', 'berlin', 'برلين', 'munich', 'ميونخ'],
-        'italy': ['إيطاليا', 'italy', 'rome', 'روما', 'milan', 'ميلان'],
-        'spain': ['إسبانيا', 'spain', 'barcelona', 'برشلونة', 'madrid', 'مدريد'],
-        'greece': ['اليونان', 'greece', 'athens', 'أثينا', 'santorini', 'سانتوريني'],
-        'malaysia': ['ماليزيا', 'malaysia', 'kuala lumpur', 'كوالالمبور'],
-        'indonesia': ['إندونيسيا', 'indonesia', 'bali', 'بالي', 'jakarta', 'جاكرتا'],
-        'thailand': ['تايلاند', 'thailand', 'bangkok', 'بانكوك', 'phuket', 'بوكيت'],
-        'maldives': ['المالديف', 'maldives', 'malé', 'ماليه'],
-    }
-
-    dest_lower = destination.lower().strip()
-    destination_country = 'unknown'
-    for country, keywords in destination_country_keywords.items():
-        for kw in keywords:
-            if kw in dest_lower:
-                destination_country = country
-                break
-        if destination_country != 'unknown':
-            break
-
-    # ── DETERMINISTIC domestic/international check ──
-    # This decision is NOT left to the LLM — we compute it ourselves
-    is_domestic = (traveler_country != 'unknown' and
-                   destination_country != 'unknown' and
-                   traveler_country == destination_country)
+    # ── DETERMINISTIC: same country or different? ──
+    # Normalize both to lowercase for comparison
+    tc = traveler_country.lower()
+    dc = destination_country.lower()
+    # Handle common name variations
+    is_domestic = False
+    if tc and dc:
+        is_domestic = (tc == dc
+            or tc in dc or dc in tc  # "egypt" in "egypt" or partial matches
+        )
 
     if is_domestic:
-        # Skip LLM entirely — we know this is domestic
         state["visa_notes"] = ["لا حاجة لتأشيرة — المسافر داخل بلده."]
         return state
 
-    # ── INTERNATIONAL travel — force the LLM to research visa ──
-    # Map traveler_country to Arabic name for display
-    country_arabic = {
-        'egypt': 'مصر', 'saudi arabia': 'السعودية', 'uae': 'الإمارات',
-        'jordan': 'الأردن', 'lebanon': 'لبنان', 'iraq': 'العراق',
-        'kuwait': 'الكويت', 'bahrain': 'البحرين', 'oman': 'عُمان',
-        'qatar': 'قطر', 'tunisia': 'تونس', 'morocco': 'المغرب',
-        'algeria': 'الجزائر', 'syria': 'سوريا', 'usa': 'أمريكا',
-        'uk': 'بريطانيا', 'france': 'فرنسا', 'germany': 'ألمانيا',
-    }
-    traveler_country_ar = country_arabic.get(traveler_country, traveler_country)
-    dest_country_ar = country_arabic.get(destination_country, destination_country)
-
+    # ── INTERNATIONAL → research visa requirements ──
     output = _invoke_agent(agent,
-        f"""═══ VISA RESEARCH REQUEST — INTERNATIONAL TRAVEL ═══
-⚠️ THIS IS CONFIRMED INTERNATIONAL TRAVEL. DO NOT say "no visa needed" or "domestic travel".
+        f"""═══ VISA RESEARCH — INTERNATIONAL TRAVEL ═══
+⚠️ THIS IS INTERNATIONAL TRAVEL. DO NOT say "no visa needed".
 
 TRAVELER NATIONALITY: {nationality}
-TRAVELER'S COUNTRY: {traveler_country_ar} ({traveler_country})
-DESTINATION CITY: {destination}
-DESTINATION COUNTRY: {dest_country_ar} ({destination_country})
+TRAVELER'S HOME COUNTRY: {traveler_country}
+DESTINATION: {destination}
+DESTINATION COUNTRY: {destination_country}
 
-{traveler_country_ar} ≠ {dest_country_ar} → THIS IS INTERNATIONAL TRAVEL.
-The traveler NEEDS visa information. Research visa requirements NOW.
+{traveler_country} ≠ {destination_country} → VISA RESEARCH REQUIRED.
 
-Search for: "{nationality} passport visa requirements for {destination_country}"
+Search for: "{nationality} passport visa to {destination_country}"
 
 Original request: {state['question']}
 ═══════════════════════════════════════════════════"""
