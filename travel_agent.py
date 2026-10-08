@@ -250,16 +250,32 @@ BUSINESS CLASS (domestic Egypt, round trip per person):
   Typically 1.5x-2.5x economy price: 10,000 - 25,000 EGP depending on route.
 
 INTERNATIONAL FLIGHTS FROM EGYPT (round trip per person, economy):
-  Egypt → Gulf countries (UAE, Saudi, Kuwait, Qatar): 12,000 - 25,000 EGP
-  Egypt → Turkey: 10,000 - 20,000 EGP
-  Egypt → Europe: 15,000 - 35,000 EGP
-  Egypt → Southeast Asia: 20,000 - 45,000 EGP
-  ABSOLUTE MINIMUM for ANY international flight: 10,000 EGP round trip per person.
+  Egypt → Gulf countries (UAE, Saudi, Kuwait, Qatar): 12,000 - 25,000 EGP ($250 - $500 USD)
+  Egypt → Turkey: 10,000 - 20,000 EGP ($200 - $400 USD)
+  Egypt → Europe (Italy, France, UK, Spain, Germany): 15,000 - 35,000 EGP ($300 - $700 USD)
+  Egypt → Southeast Asia: 20,000 - 45,000 EGP ($400 - $900 USD)
+  ABSOLUTE MINIMUM for ANY international flight: 10,000 EGP / $200 USD round trip per person.
+
+INTERNATIONAL FLIGHTS IN USD (round trip per person, economy — 2025-2026):
+  ══════════════════════════════════════════════════════════════
+  Cairo → Rome/Milan (Italy): $250 - $500 USD (EgyptAir ~$300, budget airlines ~$200-250)
+  Cairo → Istanbul (Turkey): $200 - $400 USD
+  Cairo → Paris/London/Berlin: $300 - $600 USD
+  Cairo → Dubai/Abu Dhabi: $200 - $400 USD
+  Cairo → Bangkok/KL: $400 - $800 USD
+  ANY Middle East → Europe: $300 - $700 USD
+  ANY Middle East → SE Asia: $400 - $900 USD
+  USA/Canada → Europe: $400 - $900 USD
+  ABSOLUTE MAXIMUM for economy round trip: $900 USD (anything above = WRONG or business class)
+  ══════════════════════════════════════════════════════════════
+  ⚠️ If you quote a price ABOVE these ranges, you are HALLUCINATING.
+  A Cairo→Rome economy round trip is $250-$500, NEVER $1,000+.
+  If Tavily returns no price, use the MIDDLE of these ranges.
 
 INTERNATIONAL FLIGHTS TO EGYPT (round trip per person, economy):
-  Kuwait → Egypt (Cairo/Hurghada/Sharm): 8,000 - 18,000 EGP equivalent
-  Saudi → Egypt: 8,000 - 18,000 EGP equivalent
-  UAE → Egypt: 10,000 - 20,000 EGP equivalent
+  Kuwait → Egypt (Cairo/Hurghada/Sharm): 8,000 - 18,000 EGP / $160 - $360 USD
+  Saudi → Egypt: 8,000 - 18,000 EGP / $160 - $360 USD
+  UAE → Egypt: 10,000 - 20,000 EGP / $200 - $400 USD
 
 GROUND TRANSPORT (one-way prices):
   Private car/transfer Cairo→Hurghada (5-6 hours): 4,000-7,000 EGP
@@ -350,6 +366,31 @@ CRITICAL RULES:
    - NEVER recommend a per-night price that exceeds what real hotels actually charge.
    - Search Tavily to verify ACTUAL prices, don't just calculate from percentages.
 
+   REALISTIC HOTEL PRICES IN USD (2025-2026) — USE THESE AS ANCHORS:
+   ══════════════════════════════════════════════════════════════
+   EUROPE (Rome, Paris, Istanbul, Barcelona, London):
+     Budget (3-star): $80 - $150/night
+     Mid-range (4-star): $150 - $300/night
+     Luxury (5-star): $250 - $800/night
+     Ultra-luxury (palace hotels): $800 - $2,000/night
+   MIDDLE EAST (Dubai, Abu Dhabi, Doha):
+     Budget: $60 - $120/night
+     Mid-range: $120 - $250/night
+     Luxury: $200 - $600/night
+   SOUTHEAST ASIA (Bangkok, Bali, KL):
+     Budget: $30 - $80/night
+     Mid-range: $80 - $200/night
+     Luxury: $150 - $500/night
+   EGYPT (Sharm, Hurghada, Cairo, Luxor) in EGP:
+     Budget: 1,500 - 3,500 EGP/night
+     Mid-range: 3,500 - 8,000 EGP/night
+     Luxury: 5,000 - 15,000 EGP/night
+     All-inclusive resort: 4,000 - 20,000 EGP/night
+   ══════════════════════════════════════════════════════════════
+   ⚠️ If you quote a price ABOVE these ranges, you are HALLUCINATING.
+   A 5-star hotel in Rome is $250-$800/night, NEVER $1,500/night for a standard room.
+   If Tavily returns no price, use the MIDDLE of these ranges.
+
 5. Always provide EXACTLY 3 options ORDERED FROM MOST EXPENSIVE TO CHEAPEST:
    - LUXURY style: Option 1 = most luxurious & expensive, Option 2 = premium, Option 3 = upscale
      ALL must be luxury-tier. The FIRST option is the TOP recommendation.
@@ -368,15 +409,17 @@ For each hotel:
   * Rating if available
   * Best for (families, couples, etc.)
 
-6. RECOMMENDATION LOGIC — MAXIMIZE QUALITY WITHIN BUDGET:
-   - LUXURY travelers: recommend the MOST EXPENSIVE hotel the budget allows.
-     If budget is 100,000 EGP for 2 nights and the most luxurious hotel costs 20,000/night (40,000 total),
-     recommend THAT hotel — NOT a cheaper 15,000/night hotel. The traveler WANTS premium.
-     Reason: "best luxury experience". NEVER "best value" for luxury travelers.
-   - MID-RANGE travelers: recommend best quality/price balance.
+6. RECOMMENDATION LOGIC — BUDGET IS THE HARD LIMIT:
+   ⚠️ BUDGET COMES FIRST, STYLE COMES SECOND.
+   - The user's budget LIMIT is NON-NEGOTIABLE. NEVER recommend a hotel that exceeds max_per_night.
+   - LUXURY travelers: recommend the BEST hotel WITHIN the budget limit.
+     If max_per_night is $300 and the best 5-star is $800, DO NOT recommend it.
+     Instead recommend the best 4-star at $250-300. That IS luxury within this budget.
+     Add a note: "لو عايز فندق 5 نجوم فاخر، يُنصح بزيادة الميزانية إلى [amount]."
+   - MID-RANGE travelers: recommend best quality/price balance within budget.
    - BUDGET travelers: recommend best value for money.
-   - NEVER recommend a cheaper hotel to a luxury traveler "because it balances price and service".
-   - ALWAYS pick the most expensive option that fits within the total budget (not just hotel allocation).
+   - If the budget only allows a 3-star hotel, recommend the BEST 3-star, not a 5-star that blows the budget.
+   - Think: "What is the BEST experience this budget can buy?" not "What is the most expensive hotel?"
 
 - Use Tavily to search and verify real hotels and their ACTUAL prices in the destination.
 - Show budget calculation before the 3 options.
@@ -1358,6 +1401,56 @@ def _generate_budget_notes_from_draft(draft: str, user_budget: float, currency: 
     return notes
 
 
+def _inject_budget_compliant_option(notes: List[str], max_price: float, category: str, destination: str) -> List[str]:
+    """
+    CODE-LEVEL: After research agent returns, check if ANY option is within budget.
+    If ALL options are over budget, inject a realistic budget-compliant option.
+    This guarantees the LLM always has at least one option within budget to pick.
+    """
+    if not notes or not max_price or max_price <= 0:
+        return notes
+
+    has_within_budget = False
+    for note in notes:
+        prices = re.findall(r'(?:\$|USD\s*)([\d,]+(?:\.\d+)?)|(\d[\d,]+(?:\.\d+)?)\s*(?:\$|USD)', note, re.IGNORECASE)
+        for price_groups in prices:
+            price_str = price_groups[0] or price_groups[1]
+            if price_str:
+                try:
+                    price_val = float(price_str.replace(',', ''))
+                    if 50 < price_val <= max_price * 1.1:
+                        has_within_budget = True
+                        break
+                except ValueError:
+                    pass
+        if has_within_budget:
+            break
+
+    if not has_within_budget:
+        if category == "transport":
+            notes.append(
+                f"✅ [BUDGET-COMPLIANT OPTION] Economy class flight to {destination}: "
+                f"estimated ${int(max_price * 0.7):,}-${int(max_price):,} per person round trip. "
+                f"Airlines: budget carriers or economy class on major airlines. "
+                f"Search for the cheapest available option. "
+                f"Maximum allowed: ${int(max_price):,}/person. "
+                f"DO NOT exceed this price."
+            )
+        elif category == "hotel":
+            star_rating = "4-star" if max_price > 150 else "3-star"
+            notes.append(
+                f"✅ [BUDGET-COMPLIANT OPTION] {star_rating} hotel in {destination}: "
+                f"estimated ${int(max_price * 0.5):,}-${int(max_price):,} per night. "
+                f"Good location, clean, well-rated. "
+                f"Maximum allowed: ${int(max_price):,}/night. "
+                f"If budget only allows a {star_rating}, recommend that. "
+                f"Tell user: لو عايز فندق أفخم، يُنصح بزيادة الميزانية."
+            )
+        print(f"[CODE-LEVEL] Injected budget-compliant {category} option (max: {int(max_price):,}) — all research options were over budget")
+
+    return notes
+
+
 # ─────────────────────────────────────────────
 # 6. Agent Nodes
 # ─────────────────────────────────────────────
@@ -1400,6 +1493,12 @@ def flight_node(state: GraphState) -> GraphState:
         f"Every option MUST cost less than {max_transport} total for {num_travelers} people."
     )
     state["flight_notes"] = _parse_notes(output)
+    # CODE-LEVEL: Inject budget-compliant option if all options are over budget
+    if total_budget and max_per_person:
+        destination = state['plan'].get('destination', '')
+        state["flight_notes"] = _inject_budget_compliant_option(
+            state["flight_notes"], max_per_person, "transport", destination
+        )
     return state
 
 
@@ -1407,6 +1506,13 @@ def hotel_node(state: GraphState) -> GraphState:
     agent = _make_research_agent(HOTEL_SYSTEM)
     travel_style = state['plan'].get('travel_style', 'mid-range')
     num_days = state['plan']['num_days']
+    num_nights = max(num_days - 1, 1)
+
+    # ── Use structured budget data from GraphState ──
+    total_budget = state.get('user_budget') or 0
+    num_travelers = state.get('num_travelers', 1)
+    max_hotel_total = int(total_budget * 0.45) if total_budget else 0
+    max_per_night = int(max_hotel_total / num_nights) if total_budget and num_nights else 0
 
     # ← ORCHESTRATOR PATTERN: Hotel receives flight context for transport-aware recommendations
     flight_context = ""
@@ -1414,10 +1520,36 @@ def hotel_node(state: GraphState) -> GraphState:
         flight_summary = chr(10).join('- ' + n for n in state['flight_notes'][:5])
         flight_context = f"\n\n══ CONTEXT FROM TRANSPORT AGENT ══\nThe traveler will arrive via:\n{flight_summary}\nConsider hotel proximity to arrival point (airport/bus station).\n══════════════════════════════════\n"
 
+    budget_constraint = ""
+    if total_budget:
+        budget_constraint = (
+            f"\n╔══════════════════════════════════════════════════════════════╗\n"
+            f"║  BUDGET HARD LIMITS — VIOLATING THESE = PLAN REJECTION     ║\n"
+            f"╚══════════════════════════════════════════════════════════════╝\n"
+            f"TOTAL TRIP BUDGET: {int(total_budget)}\n"
+            f"Number of travelers: {num_travelers}\n"
+            f"Number of nights: {num_nights}\n"
+            f"MAXIMUM hotel budget (45% of total): {max_hotel_total}\n"
+            f"MAXIMUM per night: {max_per_night}\n"
+            f"═══════════════════════════════════════════════════════════════\n"
+            f"⚠️ ALL 3 hotel options MUST cost ≤ {max_per_night}/night.\n"
+            f"If a luxury hotel costs more than {max_per_night}/night, DO NOT recommend it.\n"
+            f"Pick the best hotel WITHIN budget instead.\n"
+            f"'Luxury' does NOT mean exceeding the budget — it means the BEST option within {max_per_night}/night.\n"
+            f"If {max_per_night}/night only gets a 4-star hotel, recommend that 4-star.\n"
+            f"Tell the user: 'لو عايز فندق 5 نجوم فاخر، يُنصح بزيادة الميزانية.'\n"
+        )
+
     output = _invoke_agent(agent,
-        f"Find hotels for: {state['question']}\nDestination: {state['plan']['destination']}\nDates: {state['plan']['travel_dates']}\nNumber of nights: {num_days}\nTravel style: {travel_style}\n{flight_context}\nIMPORTANT: This is a {num_days}-day trip. Search for REAL hotel prices per night. For luxury style, recommend the MOST LUXURIOUS option as your top pick, not 'best value'."
+        f"Find hotels for: {state['question']}\nDestination: {state['plan']['destination']}\nDates: {state['plan']['travel_dates']}\nNumber of nights: {num_nights}\nTravel style: {travel_style}\n{flight_context}{budget_constraint}\nIMPORTANT: This is a {num_days}-day trip ({num_nights} nights). Search for REAL hotel prices per night. ALL options MUST be within the budget limit above."
     )
     state["hotel_notes"] = _parse_notes(output)
+    # CODE-LEVEL: Inject budget-compliant option if all options are over budget
+    if total_budget and max_per_night:
+        destination = state['plan'].get('destination', '')
+        state["hotel_notes"] = _inject_budget_compliant_option(
+            state["hotel_notes"], max_per_night, "hotel", destination
+        )
     return state
 
 
@@ -1678,12 +1810,20 @@ def writer_node(state: GraphState) -> GraphState:
     # ══════════════════════════════════════════════════════════════
     flight_notes = state.get('flight_notes', [])
     hotel_notes = state.get('hotel_notes', [])
+    destination = state['plan'].get('destination', '')
     if user_budget:
         flight_notes = _filter_over_budget_options(
             flight_notes, max_transport_per_person, "transport"
         )
         hotel_notes = _filter_over_budget_options(
             hotel_notes, max_hotel_per_night, "hotel"
+        )
+        # Inject budget-compliant options if all were filtered out
+        flight_notes = _inject_budget_compliant_option(
+            flight_notes, max_transport_per_person, "transport", destination
+        )
+        hotel_notes = _inject_budget_compliant_option(
+            hotel_notes, max_hotel_per_night, "hotel", destination
         )
         print(f"[CODE-LEVEL] Filtered research: {len(state.get('flight_notes',[]))} flight notes → {len(flight_notes)}, "
               f"{len(state.get('hotel_notes',[]))} hotel notes → {len(hotel_notes)}")
