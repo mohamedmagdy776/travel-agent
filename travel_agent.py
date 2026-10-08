@@ -1977,6 +1977,35 @@ def finalizer_node(state: GraphState) -> GraphState:
 """
         print(f"[CODE-LEVEL] Force budget fix in finalizer: over by {int(budget_result['overage']):,}")
 
+    # ══════════════════════════════════════════════════════════════
+    # If reviewer flagged _force_budget_upgrade (max iterations
+    # reached but budget still underutilized), add upgrade instructions
+    # ══════════════════════════════════════════════════════════════
+    force_upgrade = ""
+    if review_data.get("_force_budget_upgrade") and not force_fix:
+        budget_result = _extract_total_from_draft(state.get("draft", ""), user_budget)
+        estimated = budget_result.get("estimated_total", 0)
+        remaining = user_budget - estimated if estimated else 0
+        remaining_pct = (remaining / user_budget * 100) if user_budget else 0
+        if remaining_pct > 30:
+            target_min = int(user_budget * 0.75)
+            target_max = int(user_budget * 0.95)
+            force_upgrade = f"""
+╔══════════════════════════════════════════════════════════════════════╗
+║  ⬆️⬆️⬆️ BUDGET UPGRADE REQUIRED ⬆️⬆️⬆️                              ║
+║  The plan only uses {int(estimated):,} of {int(user_budget):,} budget ({remaining_pct:.0f}% unused). ║
+║  This is a '{travel_style}' trip — the traveler WANTS quality.     ║
+║                                                                      ║
+║  UPGRADE THE PLAN:                                                   ║
+║  1) Pick a BETTER hotel (budget allows up to {max_hotel_per_night:,}/night)       ║
+║  2) Pick better flights (up to {int(max_transport / max(num_travelers, 1)):,}/person) ║
+║  3) Add more premium activities                                      ║
+║  4) Target total: {target_min:,} - {target_max:,}                               ║
+║  5) Use 75-95% of the budget for the best experience                 ║
+╚══════════════════════════════════════════════════════════════════════╝
+"""
+            print(f"[CODE-LEVEL] Force budget upgrade in finalizer: only using {int(estimated):,} of {int(user_budget):,}")
+
     resp = llm.invoke([
         SystemMessage(content=FINALIZER_SYSTEM),
         HumanMessage(content=f"""Question: {state['question']}
@@ -1995,7 +2024,7 @@ TRAVEL STYLE: {travel_style} — every recommendation must match this style.
 ║  Hotel max per night: {max_hotel_per_night:,}                            ║
 ║  If draft total > {int(user_budget):,}, FIX IT by picking cheaper options.║
 ╚══════════════════════════════════════════════════════════════╝
-{force_fix}
+{force_fix}{force_upgrade}
 
 Plan: {json.dumps(state['plan'], indent=2)}
 
@@ -2087,6 +2116,52 @@ The current plan exceeds the budget by {overage:,} {cur} (Total: {est_total:,} {
             resp += budget_warning
             print(f"[CODE-LEVEL] LAST RESORT: Appended budget warning to draft (over by {overage:,})")
 
+        # ══════════════════════════════════════════════════════════════
+        # POST-CHECK: If budget is severely underutilized (>40%
+        # remaining for non-budget travelers), do an upgrade pass
+        # ══════════════════════════════════════════════════════════════
+        final_util = _extract_total_from_draft(resp, user_budget)
+        if not final_util["is_over_budget"] and final_util.get("estimated_total", 0) > 0:
+            est = final_util["estimated_total"]
+            rem = user_budget - est
+            rem_pct = (rem / user_budget) * 100
+            style_lower = travel_style.lower()
+            is_budget_style = style_lower in ['budget', 'اقتصادي', 'رخيص']
+            if rem_pct > 40 and not is_budget_style:
+                print(f"[CODE-LEVEL] Finalizer output underutilizes budget: {int(est):,} of {int(user_budget):,} ({rem_pct:.0f}% unused) — forcing upgrade pass")
+                target_min = int(user_budget * 0.75)
+                target_max = int(user_budget * 0.95)
+                resp_upgrade = llm.invoke([
+                    SystemMessage(content=FINALIZER_SYSTEM),
+                    HumanMessage(content=f"""The draft below only uses {int(est):,} of the {int(user_budget):,} budget ({rem_pct:.0f}% unused).
+This is a '{travel_style}' trip — the traveler wants a QUALITY experience, not to save money.
+
+MANDATORY UPGRADES — apply ALL of these:
+1. Pick a BETTER hotel — budget allows up to {max_hotel_per_night:,}/night for {num_nights} nights.
+   Choose a higher-rated or more luxurious hotel within this limit.
+2. Pick better flights — budget allows up to {int(max_transport / max(num_travelers, 1)):,}/person.
+   Choose a reputable airline with better service, but DO NOT exceed this per-person limit.
+3. Add more premium activities or upgrade existing ones.
+4. Target total: {target_min:,} - {target_max:,} (use 75-95% of budget).
+5. Recalculate the budget table with the upgraded numbers.
+
+IMPORTANT: Do NOT go OVER {int(user_budget):,}. Stay between {target_min:,} and {target_max:,}.
+
+Draft to upgrade:
+{resp}
+"""),
+                ]).content
+                # Only use upgrade if it's better utilized but still within budget
+                check_upgrade = _extract_total_from_draft(resp_upgrade, user_budget)
+                upgrade_est = check_upgrade.get("estimated_total", 0)
+                if upgrade_est and not check_upgrade["is_over_budget"] and upgrade_est > est:
+                    resp = resp_upgrade
+                    print(f"[CODE-LEVEL] Upgrade pass improved utilization: {int(upgrade_est):,} vs {int(est):,}")
+                elif upgrade_est and check_upgrade["is_over_budget"]:
+                    print(f"[CODE-LEVEL] Upgrade pass went over budget ({int(upgrade_est):,}) — keeping original")
+                else:
+                    print(f"[CODE-LEVEL] Upgrade pass didn't improve — keeping original")
+
     state["draft"] = resp
 
     # ══════════════════════════════════════════════════════════════
@@ -2149,6 +2224,56 @@ def should_revise(state: GraphState) -> Literal["revise", "finalize"]:
                 f"The final total MUST be LESS than {int(user_budget):,}."
             )
             state["review"] = review
+
+    # ══════════════════════════════════════════════════════════════
+    # CODE-LEVEL UNDER-UTILIZATION CHECK — for luxury/mid-range
+    # If >40% budget remaining, the plan picked too-cheap options
+    # ══════════════════════════════════════════════════════════════
+    is_underutilized = False
+    if user_budget and state.get("draft") and not is_over_budget:
+        budget_result = _extract_total_from_draft(state["draft"], user_budget)
+        estimated = budget_result.get("estimated_total", 0)
+        if estimated and estimated > 0:
+            remaining = user_budget - estimated
+            remaining_pct = (remaining / user_budget) * 100
+            travel_style = state['plan'].get('travel_style', 'mid-range').lower()
+            num_days = state['plan'].get('num_days', 1)
+            num_nights = max(num_days - 1, 1)
+            num_travelers = state.get('num_travelers', 1)
+
+            # Thresholds: luxury >35% remaining, mid-range >45% remaining
+            threshold = 35 if 'lux' in travel_style or 'فاخر' in travel_style else 45
+            if remaining_pct > threshold and travel_style not in ['budget', 'اقتصادي', 'رخيص']:
+                is_underutilized = True
+                print(f"[CODE-LEVEL] BUDGET UNDERUTILIZED: total={int(estimated):,}, "
+                      f"budget={int(user_budget):,}, remaining={int(remaining):,} ({remaining_pct:.0f}%)")
+
+                if "budget_check" not in review:
+                    review["budget_check"] = {}
+                review["budget_check"]["budget_underutilized"] = True
+                review["budget_check"]["remaining_amount"] = remaining
+                review["budget_check"]["remaining_percentage"] = remaining_pct
+
+                review["score"] = min(review["score"], 65)
+                score = review["score"]
+
+                if "fix_instructions" not in review:
+                    review["fix_instructions"] = []
+
+                # Calculate what they SHOULD spend
+                target_hotel_per_night = int(user_budget * 0.45 / num_nights)
+                target_transport_per_person = int(user_budget * 0.35 / max(num_travelers, 1))
+
+                review["fix_instructions"].insert(0,
+                    f"BUDGET UNDERUTILIZED: Only {int(estimated):,} of {int(user_budget):,} used "
+                    f"({remaining_pct:.0f}% remaining). This is a '{travel_style}' trip — "
+                    f"use more of the budget for a better experience. "
+                    f"UPGRADE: 1) Pick a better hotel — budget allows up to {target_hotel_per_night:,}/night. "
+                    f"2) Pick better flights — budget allows up to {target_transport_per_person:,}/person. "
+                    f"3) Add more/better activities. "
+                    f"Target total should be {int(user_budget * 0.75):,}-{int(user_budget * 0.95):,}."
+                )
+                state["review"] = review
     # ══════════════════════════════════════════════════════════════
 
     # Max iterations — but if STILL over budget on last iteration,
@@ -2157,10 +2282,17 @@ def should_revise(state: GraphState) -> Literal["revise", "finalize"]:
         if is_over_budget:
             print(f"[CODE-LEVEL] Max iterations reached but STILL over budget — flagging for finalizer")
             state["review"]["_force_budget_fix"] = True
+        if is_underutilized:
+            print(f"[CODE-LEVEL] Max iterations reached but STILL underutilized — flagging for finalizer")
+            state["review"]["_force_budget_upgrade"] = True
         return "finalize"
 
     # If over budget, force revision (we have iterations left)
     if is_over_budget:
+        return "revise"
+
+    # If underutilized, force revision (we have iterations left)
+    if is_underutilized:
         return "revise"
 
     budget = review.get("budget_check", {})
