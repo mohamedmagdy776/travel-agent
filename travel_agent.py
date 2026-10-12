@@ -245,8 +245,16 @@ Rules:
 - Include booking tips and best time to buy.
 - DO NOT include any booking links — links will be added automatically by the system.
 - If destination has no airport, suggest the BEST transport option for the travel style (see above).
-- Use Tavily when the question requires current, recent info.
-- Don't use Tavily when web search is unnecessary.
+- 🔎 ALWAYS use Tavily to search for the ACTUAL, CURRENT price of THIS exact route and dates
+  BEFORE quoting anything. Do NOT answer from memory. Run at least 2-3 searches, e.g.:
+    • "<from> to <destination> flight price <month year> round trip"
+    • "<airline> <from> to <destination> ticket price <year>"
+    • "cheapest flights <from> <destination> <dates>"
+  Read the returned results and quote the REAL searched price (per person, round trip).
+- The hardcoded ranges below are a SANITY CHECK ONLY — to catch obviously-wrong / hallucinated
+  numbers, and a LAST-RESORT fallback when a search truly returns nothing. They are NOT a
+  substitute for searching. A real searched price that falls inside the range ALWAYS wins over
+  the middle-of-range estimate.
 
 ═══════════════════════════════════════════════════
 PRICE REALISM — EXTREMELY CRITICAL (2025-2026 PRICES):
@@ -369,6 +377,14 @@ OUTPUT RULES — VERY IMPORTANT:
   BUDGET → recommend Option 3 (cheapest)"""
 
 HOTEL_SYSTEM = """You are the Hotel agent. You have access to a web search tool called Tavily.
+
+🔎 ALWAYS SEARCH FIRST — MANDATORY:
+Before quoting ANY hotel or price, use Tavily to find REAL, currently-bookable hotels in the exact
+destination and their ACTUAL nightly prices for the travel dates. Do NOT answer from memory. Run at
+least 2-3 searches, e.g. "best 5-star hotels <destination> price per night <month year>",
+"<destination> all inclusive resort price <year>", "<hotel name> price per night". Quote the REAL
+searched price. The ranges below are a SANITY CHECK + last-resort fallback only — never a substitute
+for searching, and a real searched price inside the range always wins over the middle estimate.
 
 CRITICAL RULES:
 1. LOCATION: Search ONLY in the EXACT destination. Never show a hotel from a different city.
@@ -602,7 +618,10 @@ SMART ALLOCATION based on hotel meal plan:
 BUDGET COMPARISON — MATH MUST BE CORRECT:
 - Add up ALL category costs to get TOTAL.
 - Remaining = User's budget - TOTAL.
-- If remaining > 0: say "الميزانية المتبقية: X" (remaining budget: X).
+- If remaining > 0 for LUXURY / MID-RANGE: the plan is UNDER-USING the budget — it must be CONSUMED
+  with real, named experiences (repeating a great one is fine), not reported as spare money. Do NOT
+  frame leftover as "can be used for...". Only for short trips / budget travelers, say
+  "الميزانية المتبقية: X" plainly (remaining budget: X), with no suggestion.
 - If remaining = 0: say "تم استخدام الميزانية بالكامل".
 - If remaining < 0: CRITICAL ERROR — reduce costs to stay under budget.
 - NEVER say "تم استهلاك الميزانية بالكامل" if the total is LESS than the budget.
@@ -663,7 +682,8 @@ RULES:
 - Never add food budget if hotel is all-inclusive or full board.
 - Show final breakdown table clearly.
 - Use preferred currency for ALL prices.
-- Use Tavily for current prices to verify.
+- Use Tavily to verify current prices for any cost NOT already provided by the flight/hotel agents
+  (e.g. activity tickets, meals, airport transfers). Prefer real searched prices over estimates.
 - After searching, formulate specific bullet-point notes with the budget math shown clearly."""
 
 WRITER_SYSTEM = """You are the Writer agent for a travel planning system.
@@ -767,11 +787,19 @@ BUDGET MATH — MUST BE CORRECT:
 ═══════════════════════════════════════════════════
 - Add up ALL costs EXACTLY. Use the ACTUAL numbers from the budget research notes.
 - Remaining budget = User's total budget - Your calculated total.
-- If remaining > 0: write "الميزانية المتبقية: [remaining amount]". NEVER say "تم استهلاك الميزانية".
-- If remaining = 0 exactly: write "تم استخدام الميزانية بالكامل".
 - If total > budget: ERROR — reduce costs.
-- For SHORT TRIPS (1-3 days): the total will likely be MUCH LESS than the budget. This is NORMAL.
-  A 1-day trip with 60,000 budget may only cost 20,000-30,000. Report the real remaining amount.
+- REMAINING BUDGET — DO NOT just report it as "spare money":
+  • For LUXURY / MID-RANGE trips (any length): you MUST first CONSUME the remainder with real,
+    named additions (see the next section) until it is nearly gone (remaining ≈ 0-3% of budget).
+  • ⛔ NEVER write a suggestion note like "الميزانية المتبقية: X، يمكن استخدامها لتحسين الأنشطة أو
+    تناول الطعام في مطاعم فاخرة". That phrasing is FORBIDDEN — YOU are the planner: actually ADD those
+    meals / activities to the day-by-day itinerary and the budget table, instead of telling the user
+    they "could" spend it.
+  • Only if a small residual is genuinely unavoidable, state it plainly: "الميزانية المتبقية: X" —
+    with NO "يمكن استخدامها" / "can be used for" suggestion attached.
+  • If remaining = 0: write "تم استخدام الميزانية بالكامل". NEVER say "تم استهلاك الميزانية".
+- SHORT TRIPS (1-3 days) & BUDGET-style travelers are the exception: a large remaining balance is
+  normal/good — just report the real remaining amount plainly, with no suggestion text.
 
 ═══════════════════════════════════════════════════
 USE THE BUDGET — FILL LEFTOVER WITH EXPERIENCES (multi-day non-budget trips):
@@ -786,8 +814,11 @@ great trip." So for LUXURY and MID-RANGE trips of 4+ days, do NOT leave a large 
     3. Outings and add-ons — spa, private boat, sunset cruise, guided tours, premium entry tickets.
 - Distribute these ACROSS the daily itinerary (e.g. a nice dinner each evening, one excursion per
   full day) so the days feel full, and ADD their costs to the budget table (Activities / Dining rows).
-- Keep adding until the remaining balance is SMALL — target using about 90% of the budget (aim for a
-  final total of roughly 85–95% of the budget). Leaving ~5–10% as a small buffer is fine.
+- Keep adding until the remaining balance is NEARLY ZERO — target using ~97-100% of the budget. Only
+  a tiny residual (≤3% of the budget) may remain.
+- ✅ It is PERFECTLY FINE to REPEAT a standout experience to use up the budget — e.g. book a second
+  dinner at the same great restaurant, add another day of a loved activity, or a second excursion.
+  Listing a real, named place twice (with its price counted twice) is better than leaving money unspent.
 - HARD RULE: the total must still be LESS than the budget. Never go over. Fill UP TO it, never past it.
 - BUDGET-style travelers are the exception: for them, a large remaining balance is GOOD (they save).
 - Every added restaurant/activity must be REAL and NAMED with a price — never "extra dining ~5,000".
@@ -1102,7 +1133,11 @@ The user gave a budget to be USED on a great trip, not left sitting unused.
     • outings & add-ons (spa, private boat, sunset cruise, guided tours, premium tickets).
 - Spread them across the daily itinerary so the days feel full, and add their costs to the
   budget table under Activities / Dining.
-- Target using ~85–95% of the budget. A small ~5–10% buffer is fine; a big unused balance is NOT.
+- Target using ~97-100% of the budget. Only a tiny residual (≤3%) may remain; a bigger unused
+  balance is NOT acceptable.
+- ✅ It is FINE to REPEAT a standout experience to use up the budget — a second dinner at the same
+  great restaurant, another day of a loved activity, a second excursion. Counting a real, named place
+  twice is better than leaving money unspent.
 - HARD RULE: total must stay BELOW the budget — fill UP TO it, never past it.
 - BUDGET-style travelers are the exception: for them a large remaining balance is GOOD.
 
@@ -1131,8 +1166,13 @@ BUDGET PLACEMENT:
 
 BUDGET MATH — MUST BE CORRECT:
 - Add costs exactly. Remaining = budget - total.
-- If remaining > 0: write "الميزانية المتبقية: [amount]". NEVER say "تم استهلاك الميزانية".
-- For short trips (1-3 days), total will be MUCH less than budget. This is normal and correct.
+- If remaining > 0 for a LUXURY / MID-RANGE trip: do NOT leave it — CONSUME it with real, named meals
+  / activities (repeating a great one is fine) until remaining ≈ 0-3%. ⛔ NEVER write a suggestion like
+  "الميزانية المتبقية: X، يمكن استخدامها لـ..." — add the experiences yourself instead. If a tiny
+  residual is unavoidable, state "الميزانية المتبقية: X" plainly, with NO "يمكن استخدامها" suggestion.
+- If remaining = 0: write "تم استخدام الميزانية بالكامل". NEVER say "تم استهلاك الميزانية".
+- For short trips (1-3 days) & BUDGET travelers, total will be MUCH less than budget. This is normal
+  and correct — just report the real remaining amount plainly.
 - The hotel in budget MUST match the recommended hotel in the hotels section.
 - Transport cost in budget MUST be the TOTAL for ALL travelers (per_person × num_travelers).
   If transport table shows 13,500/person × 4 travelers = 54,000, budget transport = 54,000.
@@ -2611,9 +2651,9 @@ def finalizer_node(state: GraphState) -> GraphState:
         remaining = user_budget - estimated if estimated else 0
         remaining_pct = (remaining / user_budget * 100) if user_budget else 0
         if remaining_pct > 30:
-            target_min = int(user_budget * 0.75)
-            target_max = int(user_budget * 0.95)
-            fill_amount = int(user_budget * 0.90 - estimated)
+            target_min = int(user_budget * 0.90)
+            target_max = int(user_budget * 0.99)
+            fill_amount = int(user_budget * 0.98 - estimated)
             force_upgrade = f"""
 ╔══════════════════════════════════════════════════════════════════════╗
 ║  ⬆️⬆️⬆️ BUDGET UNDER-USED — FILL IT WITH EXPERIENCES ⬆️⬆️⬆️         ║
@@ -2799,16 +2839,18 @@ Draft to fix:
                 and rem >= min_fill_abs
             )
             if should_fill:
-                print(f"[CODE-LEVEL] Finalizer leftover {int(rem):,} ({rem_pct:.0f}%) — filling with experiences toward ~90%")
-                target_min = int(user_budget * 0.85)
-                target_max = int(user_budget * 0.96)
-                fill_amount = int(user_budget * 0.90 - est)
+                print(f"[CODE-LEVEL] Finalizer leftover {int(rem):,} ({rem_pct:.0f}%) — filling with experiences toward ~99%")
+                target_min = int(user_budget * 0.95)
+                target_max = int(user_budget * 0.99)
+                fill_amount = int(user_budget * 0.98 - est)
                 resp_upgrade = llm.invoke([
                     SystemMessage(content=FINALIZER_SYSTEM),
                     HumanMessage(content=f"""The draft below uses only {int(est):,} of the {int(user_budget):,} budget — {int(rem):,} ({rem_pct:.0f}%) is left unused.
 This is a '{travel_style}' trip of {num_nights} nights. The user wants the budget USED on a great trip, not left over.
 
-FILL the ~{max(fill_amount, 0):,} leftover with REAL, NAMED experiences — do NOT inflate hotel/flight prices:
+FILL the ~{max(fill_amount, 0):,} leftover with REAL, NAMED experiences — do NOT inflate hotel/flight prices.
+⛔ Do NOT write a note like "الميزانية المتبقية: X، يمكن استخدامها لـ..." — ADD the experiences yourself instead.
+✅ Repeating a standout place is FINE (a 2nd dinner at the same great restaurant, a 2nd excursion) to use the budget.
 1. Premium dining — add named restaurants (with price/meal). Aim for one nice dinner on most evenings.
 2. Excursions / day-trips — named operator + location + price/person. Add roughly one per full day.
 3. Outings & add-ons — spa, private boat, sunset cruise, guided tours, premium entry tickets.
@@ -2857,9 +2899,9 @@ Draft to enrich:
         underused = (not is_budget_style) and remaining_pct > 8
 
         if (meals_present and food_missing) or underused:
-            # How much the stay can really spend on food: budget minus transport+hotel, keep ~4% buffer,
-            # leave room for the existing activities. Target ~92% utilization overall.
-            spendable = int(user_budget * 0.96)
+            # How much the stay can really spend on food: budget minus transport+hotel, keep ~1% buffer,
+            # leave room for the existing activities. Target ~98-99% utilization overall.
+            spendable = int(user_budget * 0.99)
             food_target = int(min(food_in_itin if food_in_itin > 0 else user_budget * 0.18,
                                   max(user_budget * 0.12, spendable - cur_total + (food_in_table or 0))))
             food_target = max(food_target, int(user_budget * 0.10))
@@ -2884,7 +2926,7 @@ RULES:
    other evenings lighter (a moderate local restaurant, or a meal included in the hotel). Quality over
    quantity. Food spend should land around {food_target:,} {cur_sym}.
 3. Recompute every row (Transport, Hotel, Activities, FOOD, Misc) and the TOTAL. The TOTAL MUST include
-   food and be LESS than {int(user_budget):,} {cur_sym}, while USING about 90–97% of it (small remaining only).
+   food and be LESS than {int(user_budget):,} {cur_sym}, while USING about 97-100% of it (only a tiny remaining).
 4. Keep the SAME language, format, currency ({cur_code} / {cur_sym}), and number of itinerary days.
 
 Draft to fix:
@@ -3018,20 +3060,22 @@ def should_revise(state: GraphState) -> Literal["revise", "finalize"]:
                 target_hotel_per_night = int(user_budget * 0.45 / num_nights)
                 target_transport_per_person = int(user_budget * 0.35 / max(num_travelers, 1))
 
-                remaining_to_fill = int(user_budget * 0.90 - estimated)
+                remaining_to_fill = int(user_budget * 0.98 - estimated)
                 review["fix_instructions"].insert(0,
                     f"BUDGET UNDERUTILIZED: Only {int(estimated):,} of {int(user_budget):,} used "
                     f"({remaining_pct:.0f}% remaining ≈ {int(remaining):,} unused). This is a '{travel_style}' trip — "
                     f"the user wants the budget USED on a great trip, not left over. "
                     f"FILL the remaining ~{max(remaining_to_fill, 0):,} with REAL, NAMED experiences "
-                    f"(do NOT just inflate hotel/flight prices): "
+                    f"(do NOT just inflate hotel/flight prices). "
+                    f"⛔ Do NOT write 'الميزانية المتبقية: X، يمكن استخدامها لـ...' — ADD the experiences yourself. "
+                    f"✅ Repeating a standout place is fine (2nd dinner at the same restaurant, a 2nd excursion): "
                     f"1) Add premium dining — named restaurants with price/meal, one nice dinner most evenings. "
                     f"2) Add excursions/day-trips — named operator + location + price/person, one per full day. "
                     f"3) Add outings/add-ons — spa, private boat, sunset cruise, guided tours, premium tickets. "
                     f"4) Optionally upgrade the hotel (up to {target_hotel_per_night:,}/night) or flights "
                     f"(up to {target_transport_per_person:,}/person) if that genuinely improves the trip. "
                     f"Spread everything across the daily itinerary and add the costs to the budget table. "
-                    f"Target total: {int(user_budget * 0.85):,}-{int(user_budget * 0.95):,} (stay UNDER {int(user_budget):,})."
+                    f"Target total: {int(user_budget * 0.95):,}-{int(user_budget * 0.99):,} (stay UNDER {int(user_budget):,})."
                 )
                 state["review"] = review
     # ══════════════════════════════════════════════════════════════
