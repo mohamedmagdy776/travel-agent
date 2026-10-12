@@ -793,6 +793,26 @@ great trip." So for LUXURY and MID-RANGE trips of 4+ days, do NOT leave a large 
 - Every added restaurant/activity must be REAL and NAMED with a price — never "extra dining ~5,000".
 
 ═══════════════════════════════════════════════════
+FOOD / DINING IN THE BUDGET — MUST BE COUNTED (CRITICAL):
+═══════════════════════════════════════════════════
+⛔ "Food: 0" is FORBIDDEN whenever the itinerary lists ANY paid meal (lunch, dinner, restaurant).
+   A budget that shows Michelin dinners in the day-by-day plan but "Food: 0" in the table is WRONG
+   and self-contradictory — it will be rejected.
+- SUM every paid meal you put in the itinerary and put that sum in the "الطعام / Food" row of the budget
+  table. The Food row MUST equal the total of the meals actually scheduled (per-person meals × travelers,
+  group meals as-is). The itinerary and the Food row MUST agree to the dollar.
+- Food is the ONLY exception when it's genuinely 0: the hotel meal plan is Full-Board / All-Inclusive
+  AND no extra paid restaurant appears in the itinerary. In that case write "0 (مشمول في الفندق)".
+- KEEP THE RESTAURANTS LUXURIOUS, BUT LIMIT HOW MANY expensive outings you schedule so the food total
+  fits the budget. Do NOT put a $150/person Michelin dinner every single night. Instead:
+    • Feature 2–3 signature premium/Michelin dinners across the whole trip (the highlights).
+    • On the other evenings, keep it lighter: a nice but moderate local restaurant, or a meal included
+      in the hotel. Quality over quantity — fewer grand dinners, each one special.
+- The TOTAL (transport + hotel + activities + FOOD + misc) must include food and stay UNDER the budget,
+  while still using ~90–97% of it. If adding the real food cost pushes you over, REDUCE THE NUMBER of
+  premium dinners (keep them luxurious, just fewer) — do NOT hide the food cost to look within budget.
+
+═══════════════════════════════════════════════════
 TRANSPORT IN BUDGET — MULTIPLY BY TRAVELERS:
 ═══════════════════════════════════════════════════
 - The transport table already shows TOTAL for all travelers in the "الإجمالي" column.
@@ -1085,6 +1105,21 @@ The user gave a budget to be USED on a great trip, not left sitting unused.
 - Target using ~85–95% of the budget. A small ~5–10% buffer is fine; a big unused balance is NOT.
 - HARD RULE: total must stay BELOW the budget — fill UP TO it, never past it.
 - BUDGET-style travelers are the exception: for them a large remaining balance is GOOD.
+
+═══════════════════════════════════════════════════
+FOOD / DINING — MUST BE COUNTED, NEVER 0 WITH RESTAURANTS (CRITICAL):
+═══════════════════════════════════════════════════
+⛔ "Food: 0" is FORBIDDEN whenever the day-by-day plan lists any paid meal. A plan that shows
+   $150/person Michelin dinners but "Food: 0" in the budget table is self-contradictory and REJECTED.
+- The "الطعام / Food" row MUST equal the SUM of every paid meal in the itinerary
+  (per-person meals × travelers, group meals as-is). The table and the itinerary MUST agree.
+- KEEP the restaurants luxurious, but LIMIT how many expensive outings are scheduled so food fits:
+  feature 2–3 signature premium/Michelin dinners across the trip; make the other evenings lighter
+  (a moderate local restaurant, or a meal included in the hotel). Fewer grand dinners, each special.
+- If counting the real food cost pushes the TOTAL over budget, REDUCE THE NUMBER of premium dinners
+  (keep them luxurious, just fewer) — NEVER hide food cost as 0 to appear within budget.
+- Food = 0 is allowed ONLY when the hotel plan is Full-Board/All-Inclusive AND no paid restaurant
+  appears in the plan; then write "0 (مشمول في الفندق)".
 
 If a review exists, incorporate ALL fixes.
 Make it ready to print and follow.
@@ -1587,6 +1622,70 @@ def _generate_budget_notes_from_draft(draft: str, user_budget: float, currency: 
         notes.append(f"ميزانية المستخدم: {int(user_budget):,} {currency}")
 
     return notes
+
+
+# Keywords that mark a line as a (paid) meal in the itinerary.
+_MEAL_KW = ['dinner', 'lunch', 'breakfast', 'brunch', 'meal', 'dine', 'dining',
+            'restaurant', 'ristorante', 'trattoria', 'osteria', 'bistro',
+            'عشاء', 'غداء', 'فطور', 'إفطار', 'وجبة', 'وجبات', 'مطعم', 'مطاعم',
+            'تناول', 'عشا', 'غدا', 'مأكولات']
+_PP_KW = ['/person', 'per person', 'per-person', ' pp', 'للفرد', '/فرد', 'للشخص', 'لكل شخص', 'للفرد الواحد']
+_GROUP_KW = ['for the group', 'للمجموعة', 'للمجموعه', 'للجميع', 'group total', 'total for the']
+_PRICE_RE = re.compile(
+    r'(?:\$|USD|€|£|ج\.م|EGP|AED|د\.إ|SAR|ر\.س)\s*([\d,]+(?:\.\d+)?)'
+    r'|([\d,]+(?:\.\d+)?)\s*(?:\$|USD|€|£|ج\.م|EGP|AED|د\.إ|SAR|ر\.س)', re.IGNORECASE)
+
+
+def _sum_itinerary_food(text: str, num_travelers: int) -> float:
+    """Sum the cost of PAID meals scheduled in the day-by-day itinerary.
+    Per-person meals are multiplied by travelers; group/unspecified meals counted once.
+    Used to detect a 'Food: 0 but Michelin dinners listed' contradiction."""
+    if not text:
+        return 0.0
+    nt = max(int(num_travelers or 1), 1)
+    total = 0.0
+    for raw in text.splitlines():
+        low = raw.lower()
+        if not any(k in low for k in _MEAL_KW):
+            continue
+        # skip the budget-table row itself (we want itinerary meals, not the summary line)
+        if ('الطعام' in raw or 'food' in low) and ('|' in raw or 'budget' in low):
+            continue
+        m = _PRICE_RE.search(raw)
+        if not m:
+            continue
+        val_s = m.group(1) or m.group(2)
+        try:
+            val = float(val_s.replace(',', ''))
+        except (ValueError, AttributeError):
+            continue
+        if val <= 0:
+            continue
+        is_pp = any(k in low for k in _PP_KW)
+        is_group = any(k in low for k in _GROUP_KW)
+        total += val * nt if (is_pp and not is_group) else val
+    return total
+
+
+def _extract_food_line(text: str):
+    """Return the Food/الطعام amount from the budget table, or None if there's no food row.
+    '0 (مشمول في الفندق)' / 'included' returns 0.0."""
+    if not text:
+        return None
+    for pat in [
+        r'\|\s*(?:\*\*)?(?:الطعام|الأكل|الوجبات|Food|Dining|Meals)(?:\*\*)?[^\|\n]*\|\s*(?:\*\*)?\$?\s*([\d,]+)',
+        r'(?:الطعام|الأكل|الوجبات|Food|Dining|Meals)\s*(?:\([^)]*\))?\s*[:=]\s*\$?\s*([\d,]+)',
+    ]:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            try:
+                return float(m.group(1).replace(',', ''))
+            except ValueError:
+                pass
+    # A food row that says 0 / included / مشمول
+    if re.search(r'(?:الطعام|Food)\b[^\n|]*(?:\|\s*)?(?:\$?\s*0\b|included|مشمول|مجان)', text, re.IGNORECASE):
+        return 0.0
+    return None
 
 
 def _inject_budget_compliant_option(notes: List[str], max_price: float, category: str, destination: str) -> List[str]:
@@ -2736,6 +2835,72 @@ Draft to enrich:
                     print(f"[CODE-LEVEL] Fill pass went over budget ({int(upgrade_est):,}) — keeping original")
                 else:
                     print(f"[CODE-LEVEL] Fill pass didn't improve — keeping original")
+
+    # ══════════════════════════════════════════════════════════════
+    # FOOD CONSISTENCY — the budget table must agree with the itinerary.
+    # If the plan lists paid meals but the Food row is 0/missing (or far below the
+    # real meal total), the budget is self-contradictory. Fix it with ONE pass that
+    # KEEPS the restaurants luxurious but REDUCES how many premium meals are scheduled
+    # so the (now-counted) food fits, the total stays within budget, and ~90-97% is used.
+    # ══════════════════════════════════════════════════════════════
+    if user_budget:
+        style_low = travel_style.lower()
+        is_budget_style = style_low in ['budget', 'اقتصادي', 'رخيص']
+        food_in_itin = _sum_itinerary_food(resp, num_travelers)
+        food_in_table = _extract_food_line(resp)
+        cur_check = _extract_total_from_draft(resp, user_budget)
+        cur_total = cur_check.get("estimated_total") or 0
+        remaining_pct = ((user_budget - cur_total) / user_budget * 100) if cur_total else 0
+
+        meals_present = food_in_itin >= max(50, user_budget * 0.03)
+        food_missing = (food_in_table is None) or (food_in_table < food_in_itin * 0.5)
+        underused = (not is_budget_style) and remaining_pct > 8
+
+        if (meals_present and food_missing) or underused:
+            # How much the stay can really spend on food: budget minus transport+hotel, keep ~4% buffer,
+            # leave room for the existing activities. Target ~92% utilization overall.
+            spendable = int(user_budget * 0.96)
+            food_target = int(min(food_in_itin if food_in_itin > 0 else user_budget * 0.18,
+                                  max(user_budget * 0.12, spendable - cur_total + (food_in_table or 0))))
+            food_target = max(food_target, int(user_budget * 0.10))
+            reason = ("Food row is 0/too low while the itinerary lists paid restaurants"
+                      if (meals_present and food_missing)
+                      else f"{remaining_pct:.0f}% of the budget is unused")
+            print(f"[CODE-LEVEL] Food-consistency pass: {reason}. "
+                  f"itinerary_food≈{int(food_in_itin):,}, table_food={food_in_table}, target≈{food_target:,}")
+            resp_food = llm.invoke([
+                SystemMessage(content=FINALIZER_SYSTEM),
+                HumanMessage(content=f"""Fix the budget so it is CONSISTENT and well-used. Do NOT cheapen the trip.
+
+PROBLEM: {reason}.
+The budget table must AGREE with the day-by-day itinerary.
+
+RULES:
+1. The 'الطعام / Food' row MUST equal the sum of the paid meals in the itinerary
+   (per-person meals × {num_travelers} travelers, group meals as-is). Food = 0 is FORBIDDEN while any
+   paid restaurant is scheduled.
+2. KEEP the restaurants LUXURIOUS (Michelin / premium are great) — but REDUCE HOW MANY expensive
+   dinners are scheduled: feature 2–3 signature premium dinners across the whole trip, and make the
+   other evenings lighter (a moderate local restaurant, or a meal included in the hotel). Quality over
+   quantity. Food spend should land around {food_target:,} {cur_sym}.
+3. Recompute every row (Transport, Hotel, Activities, FOOD, Misc) and the TOTAL. The TOTAL MUST include
+   food and be LESS than {int(user_budget):,} {cur_sym}, while USING about 90–97% of it (small remaining only).
+4. Keep the SAME language, format, currency ({cur_code} / {cur_sym}), and number of itinerary days.
+
+Draft to fix:
+{resp}
+"""),
+            ]).content
+            chk = _extract_total_from_draft(resp_food, user_budget)
+            new_food = _extract_food_line(resp_food)
+            new_total = chk.get("estimated_total") or 0
+            # Adopt only if it's within budget AND food is now counted (non-trivial) AND it didn't shrink the total.
+            if (not chk["is_over_budget"]) and new_food and new_food > 0 and new_total >= cur_total * 0.9:
+                resp = resp_food
+                print(f"[CODE-LEVEL] Food-consistency pass applied: food={int(new_food):,}, total={int(new_total):,}")
+            else:
+                print(f"[CODE-LEVEL] Food-consistency pass rejected (food={new_food}, total={int(new_total):,}, "
+                      f"over={chk['is_over_budget']}) — keeping original")
 
     # ══════════════════════════════════════════════════════════════
     # CURRENCY NORMALIZATION — HARD GUARANTEE: force the whole output into the
