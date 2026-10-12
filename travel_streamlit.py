@@ -464,110 +464,58 @@ if submitted:
                 print("[INTERNAL] WARNING: Visa info missing")
 
         # ── Result tabs ──────────────────────────────────────────
-        tab1, tab2, tab3, tab4 = st.tabs([t("tab1"), t("tab2"), t("tab3"), t("tab4")])
+        # ── Single consolidated view — the full itinerary only ─────
+        # All details (flights, hotels, visa, weather, budget) live INSIDE
+        # the full plan itself, so there are no separate tabs that could
+        # drift out of sync with it.
+        draft_content = result.get("draft", "")
+        if is_ar:
+            # Convert any markdown (###, pipe tables, **bold**) to HTML
+            # so it renders correctly inside RTL div with unsafe_allow_html
+            draft_html = _md_to_html(draft_content)
+            st.markdown(f'<div class="rtl">{draft_html}</div>',
+                        unsafe_allow_html=True)
+        else:
+            st.markdown(draft_content)
 
-        with tab1:
-            draft_content = result.get("draft", "")
-            if is_ar:
-                # Convert any markdown (###, pipe tables, **bold**) to HTML
-                # so it renders correctly inside RTL div with unsafe_allow_html
-                draft_html = _md_to_html(draft_content)
-                st.markdown(f'<div class="rtl">{draft_html}</div>',
-                            unsafe_allow_html=True)
-            else:
-                st.markdown(draft_content)
-            st.download_button(
-                t("download"),
-                result.get("draft", ""),
-                file_name=f"trip_{to_city}_{departure}.md",
-                mime="text/markdown",
-            )
+        # ── Direct booking links (built from trip data, always work) ──
+        from_clean = from_city.replace(" ", "+").replace(",", "")
+        to_clean = to_city.replace(" ", "+").replace(",", "")
+        dep_str = departure.strftime("%Y-%m-%d")
+        ret_str = (departure + timedelta(days=num_days)).strftime("%Y-%m-%d")
 
-        with tab2:
-            # ── Real booking links (built from trip data, always work) ──
-            from_clean = from_city.replace(" ", "+").replace(",", "")
-            to_clean = to_city.replace(" ", "+").replace(",", "")
-            dep_str = departure.strftime("%Y-%m-%d")
-            ret_str = (departure + timedelta(days=num_days)).strftime("%Y-%m-%d")
+        st.markdown("---")
+        st.subheader("🔗 " + ("روابط الحجز المباشرة" if is_ar else "Direct Booking Links"))
+        col_f, col_h = st.columns(2)
+        with col_f:
+            st.markdown("**" + ("✈️ رحلات طيران" if is_ar else "✈️ Flights") + "**")
+            google_flights = f"https://www.google.com/travel/flights?q=flights+from+{from_clean}+to+{to_clean}"
+            skyscanner = f"https://www.skyscanner.net/transport/flights/{from_clean}/{to_clean}/{departure.strftime('%y%m%d')}/"
+            kayak = f"https://www.kayak.com/flights/{from_clean}-{to_clean}/{dep_str}/{ret_str}"
+            st.markdown(f"[🔍 Google Flights]({google_flights})")
+            st.markdown(f"[🔍 Skyscanner]({skyscanner})")
+            st.markdown(f"[🔍 Kayak]({kayak})")
+            st.markdown(f"[🔍 EgyptAir](https://www.egyptair.com)")
+        with col_h:
+            st.markdown("**" + ("🏨 فنادق" if is_ar else "🏨 Hotels") + "**")
+            booking = f"https://www.booking.com/searchresults.html?ss={to_clean}&checkin={dep_str}&checkout={ret_str}&group_adults={num_travelers}"
+            airbnb = f"https://www.airbnb.com/s/{to_clean}/homes?checkin={dep_str}&checkout={ret_str}&adults={num_travelers}"
+            hotels_com = f"https://www.hotels.com/search.do?q-destination={to_clean}&q-check-in={dep_str}&q-check-out={ret_str}"
+            st.markdown(f"[🔍 Booking.com]({booking})")
+            st.markdown(f"[🔍 Airbnb]({airbnb})")
+            st.markdown(f"[🔍 Hotels.com]({hotels_com})")
 
-            st.subheader("🔗 " + ("روابط الحجز المباشرة" if is_ar else "Direct Booking Links"))
-            col_f, col_h = st.columns(2)
+        st.markdown("---")
+        st.download_button(
+            t("download"),
+            result.get("draft", ""),
+            file_name=f"trip_{to_city}_{departure}.md",
+            mime="text/markdown",
+        )
 
-            with col_f:
-                st.markdown("**" + ("✈️ بحث عن رحلات طيران" if is_ar else "✈️ Search Flights") + "**")
-                google_flights = f"https://www.google.com/travel/flights?q=flights+from+{from_clean}+to+{to_clean}"
-                skyscanner = f"https://www.skyscanner.net/transport/flights/{from_clean}/{to_clean}/{departure.strftime('%y%m%d')}/"
-                kayak = f"https://www.kayak.com/flights/{from_clean}-{to_clean}/{dep_str}/{ret_str}"
-                st.markdown(f"[🔍 Google Flights]({google_flights})")
-                st.markdown(f"[🔍 Skyscanner]({skyscanner})")
-                st.markdown(f"[🔍 Kayak]({kayak})")
-                st.markdown(f"[🔍 EgyptAir](https://www.egyptair.com)")
-
-            with col_h:
-                st.markdown("**" + ("🏨 بحث عن فنادق" if is_ar else "🏨 Search Hotels") + "**")
-                booking = f"https://www.booking.com/searchresults.html?ss={to_clean}&checkin={dep_str}&checkout={ret_str}&group_adults={num_travelers}"
-                airbnb = f"https://www.airbnb.com/s/{to_clean}/homes?checkin={dep_str}&checkout={ret_str}&adults={num_travelers}"
-                hotels_com = f"https://www.hotels.com/search.do?q-destination={to_clean}&q-check-in={dep_str}&q-check-out={ret_str}"
-                st.markdown(f"[🔍 Booking.com]({booking})")
-                st.markdown(f"[🔍 Airbnb]({airbnb})")
-                st.markdown(f"[🔍 Hotels.com]({hotels_com})")
-
-            st.markdown("---")
-
-            st.subheader(t("flights"))
-            for n in result.get("flight_notes", []):
-                if n.strip(): st.markdown(f"- {n}")
-
-        with tab3:
-            c1, c2 = st.columns(2)
-            with c1:
-                st.subheader(t("visa"))
-                for n in result.get("visa_notes", []):
-                    if n.strip(): st.markdown(f"- {n}")
-            with c2:
-                st.subheader(t("weather"))
-                for n in result.get("weather_notes", []):
-                    if n.strip(): st.markdown(f"- {n}")
-
-        with tab4:
-            st.subheader(t("budget_break"))
-            # ── Extract budget section from the DRAFT so tab4 matches tab1 ──
-            import re
-            draft_text = result.get("draft", "")
-            budget_section = ""
-
-            # Try to extract budget/cost section from draft
-            budget_patterns = [
-                # Arabic headers
-                r'(##?\s*(?:الميزانية\s*الإجمالية|إجمالي\s*التكاليف|ملخص\s*الميزانية|التكاليف).*?)(?=##?\s|\Z)',
-                # English headers
-                r'(##?\s*(?:Budget|Total\s*Cost|Cost\s*Summary).*?)(?=##?\s|\Z)',
-                # HTML table with budget
-                r'(<table[\s\S]*?الإجمالي[\s\S]*?</table>)',
-            ]
-            for pattern in budget_patterns:
-                match = re.search(pattern, draft_text, re.DOTALL | re.IGNORECASE)
-                if match:
-                    budget_section = match.group(1).strip()
-                    break
-
-            if budget_section:
-                # Show the exact same budget section from the draft
-                if is_ar:
-                    budget_html = _md_to_html(budget_section)
-                    st.markdown(f'<div class="rtl">{budget_html}</div>',
-                                unsafe_allow_html=True)
-                else:
-                    budget_html = _md_to_html(budget_section)
-                    st.markdown(budget_html, unsafe_allow_html=True)
-            else:
-                # Fallback: show synced budget_notes
-                for n in result.get("budget_notes", []):
-                    if n.strip(): st.markdown(f"- {n}")
-
-            # Internal only
-            if result.get("review", {}).get("budget_check", {}).get("is_over_budget"):
-                print("[INTERNAL] Budget exceeded - consider revising plan")
+        # Internal only
+        if result.get("review", {}).get("budget_check", {}).get("is_over_budget"):
+            print("[INTERNAL] Budget exceeded - consider revising plan")
 
     except Exception as e:
         progress_bar.empty()
