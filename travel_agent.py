@@ -864,6 +864,11 @@ If YOUR numbers differ from budget_notes, the user sees conflicting data on two 
 
 RULES:
 1. The hotel in your budget MUST be the AI-recommended hotel from the hotels table.
+   ⚠️ MANDATORY SELF-CHECK before finishing: take the per-night price of the hotel you marked
+   🏆 توصية الـAI, multiply by the number of nights (× number of rooms if the group needs more than
+   one). The الإقامة/الفندق line in the budget MUST equal exactly that. Example: recommended =
+   22,000/night, 5 nights → الإقامة = 110,000 (NOT 60,000 from a cheaper hotel). NEVER let the budget
+   quietly use a cheaper hotel than the one you recommended.
 2. The hotel price/night MUST match what's in the hotels table AND in budget_notes.
 3. The transport cost in budget MUST be the "الإجمالي" from the AI-recommended transport option.
 4. Activity costs, food costs MUST match budget_notes.
@@ -1174,6 +1179,9 @@ BUDGET MATH — MUST BE CORRECT:
 - For short trips (1-3 days) & BUDGET travelers, total will be MUCH less than budget. This is normal
   and correct — just report the real remaining amount plainly.
 - The hotel in budget MUST match the recommended hotel in the hotels section.
+  ⚠️ SELF-CHECK: الإقامة/الفندق line = (price/night of the 🏆 recommended hotel) × nights (× rooms if
+  the group needs more than one). Example: 22,000/night × 5 nights = 110,000, NOT 60,000 from a cheaper
+  hotel. Never let the budget quietly use a cheaper hotel than the recommended one.
 - Transport cost in budget MUST be the TOTAL for ALL travelers (per_person × num_travelers).
   If transport table shows 13,500/person × 4 travelers = 54,000, budget transport = 54,000.
   NOT 13,500. The budget transport MUST match the "الإجمالي" column in the transport table.
@@ -1869,6 +1877,54 @@ def _build_budget_section(transport, hotel, activities, num_nights, user_budget,
         note,
     ]
     return "\n".join(lines)
+
+
+def _recommended_hotel_night_price(draft: str, hotel_notes, travel_style: str):
+    """Best-effort per-night price of the hotel the plan marked 🏆 توصية الـAI.
+    Conservative: returns None when unsure, so the caller simply does nothing."""
+    try:
+        price_re = re.compile(
+            r'([\d][\d,]{2,})\s*(?:ج\.م|EGP|AED|د\.إ|SAR|ر\.س|EUR|€|£|USD)'
+            r'|(?:\$|€|£)\s*([\d][\d,]{2,})')
+        # 1) locate the recommended hotel name on the 🏆 line, then its price nearby
+        mrec = re.search(r'🏆[^\n:]*:\s*([^\n—\-–|]{3,60})', draft)
+        if mrec:
+            name = mrec.group(1).strip()
+            idx = draft.find(name)
+            if idx != -1:
+                window = draft[idx: idx + 220]
+                pm = price_re.search(window)
+                if pm:
+                    val = float((pm.group(1) or pm.group(2)).replace(',', ''))
+                    if 300 <= val <= 50000:
+                        return val
+        # 2) luxury fallback: the recommended hotel is the most expensive one
+        style = (travel_style or '').lower()
+        if any(k in style for k in ['lux', 'luxury', 'فاخر']):
+            p, _ = _priciest_unit_price(hotel_notes, "hotel")
+            return p
+    except Exception:
+        return None
+    return None
+
+
+def _budget_hotel_line_value(draft: str):
+    """Best-effort amount shown on the hotel/accommodation line of the budget table.
+    Returns None when unsure."""
+    try:
+        for pat in [
+            r'(?:تكلفة\s*الإقامة|الإقامة|الفندق)[^\n|]*\|\s*(?:\$|€|£)?\s*([\d][\d,]{2,})',
+            r'(?:Hotel|Accommodation)[^\n|]*\|\s*(?:\$|€|£)?\s*([\d][\d,]{2,})',
+            r'(?:تكلفة\s*الإقامة|الإقامة)\b[^\n\d]{0,20}([\d][\d,]{2,})',
+        ]:
+            m = re.search(pat, draft, re.IGNORECASE)
+            if m:
+                val = float(m.group(1).replace(',', ''))
+                if val >= 500:
+                    return val
+    except Exception:
+        return None
+    return None
 
 
 def _force_budget_fit(resp: str, flight_notes, hotel_notes, user_budget, num_nights,
@@ -2943,6 +2999,54 @@ Draft to fix:
             else:
                 print(f"[CODE-LEVEL] Food-consistency pass rejected (food={new_food}, total={int(new_total):,}, "
                       f"over={chk['is_over_budget']}) — keeping original")
+
+    # ══════════════════════════════════════════════════════════════
+    # HOTEL ↔ BUDGET CONSISTENCY — the budget's hotel line MUST reflect the
+    # RECOMMENDED hotel's price × nights. We only act when the budget clearly
+    # used a CHEAPER hotel than recommended (amount well BELOW recommended×nights);
+    # a HIGHER figure is left alone (it may legitimately cover several rooms).
+    # Detection is deterministic; the fix is a single targeted LLM re-ask that
+    # keeps the draft's own table format. Fully guarded — on any doubt, do nothing.
+    # ══════════════════════════════════════════════════════════════
+    try:
+        if user_budget:
+            rec_night = _recommended_hotel_night_price(resp, state.get("hotel_notes"), travel_style)
+            cur_hotel = _budget_hotel_line_value(resp)
+            nights_n = max(int(num_nights or 1), 1)
+            if rec_night and cur_hotel:
+                expected_hotel = rec_night * nights_n
+                if cur_hotel < expected_hotel * 0.88:   # budget quietly used a cheaper hotel
+                    print(f"[CODE-LEVEL] Hotel/budget mismatch: budget hotel={int(cur_hotel):,} but "
+                          f"recommended {int(rec_night):,}/night × {nights_n} nights = {int(expected_hotel):,}. Re-asking.")
+                    resp_hotel = llm.invoke([
+                        SystemMessage(content=FINALIZER_SYSTEM),
+                        HumanMessage(content=f"""The budget table in the draft is INCONSISTENT with the recommended hotel.
+
+The hotel marked 🏆 توصية الـAI costs {int(rec_night):,} {cur_sym} per night and the trip is {nights_n} nights,
+so the 'الإقامة / الفندق' line in the budget MUST be {int(rec_night):,} × {nights_n} = {int(expected_hotel):,} {cur_sym}
+(multiply further by the number of rooms if the group needs more than one room).
+Right now the budget shows only {int(cur_hotel):,} {cur_sym} — it quietly used a CHEAPER hotel than the recommended one. Fix it.
+
+RULES:
+1. Set the accommodation/hotel line to the RECOMMENDED hotel's real cost ({int(expected_hotel):,} {cur_sym} for {nights_n} nights, × rooms if needed).
+2. Recompute the TOTAL and remaining budget. The TOTAL must stay UNDER {int(user_budget):,} {cur_sym}.
+3. If raising the hotel pushes the total over budget, reduce OTHER lines (fewer premium dinners / activities) — do NOT switch back to a cheaper hotel than the recommended one.
+4. Keep the SAME language, table format, currency ({cur_code} / {cur_sym}), hotels table, and number of itinerary days.
+
+Draft to fix:
+{resp}
+""")]).content
+                    chk_h = _extract_total_from_draft(resp_hotel, user_budget)
+                    new_hotel = _budget_hotel_line_value(resp_hotel)
+                    # Adopt only if the hotel line now matches (±8%) AND the plan stays within budget.
+                    if (not chk_h["is_over_budget"]) and new_hotel and new_hotel >= expected_hotel * 0.92:
+                        resp = resp_hotel
+                        print(f"[CODE-LEVEL] Hotel-consistency pass applied: hotel now {int(new_hotel):,}")
+                    else:
+                        print(f"[CODE-LEVEL] Hotel-consistency pass rejected (hotel={new_hotel}, "
+                              f"over={chk_h['is_over_budget']}) — keeping original")
+    except Exception as _hc_err:
+        print(f"[CODE-LEVEL] Hotel-consistency pass error (ignored): {_hc_err}")
 
     # ══════════════════════════════════════════════════════════════
     # CURRENCY NORMALIZATION — HARD GUARANTEE: force the whole output into the
