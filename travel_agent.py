@@ -1927,6 +1927,297 @@ def _budget_hotel_line_value(draft: str):
     return None
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# DETERMINISTIC BUDGET — the numbers and the table are built IN CODE, never
+# left to the LLM. The LLM only CHOOSES the hotel/flight/experiences and writes
+# the prose; this module reads those chosen options back out, does ALL the math
+# in Python, and rebuilds the budget table so the figures can NEVER be
+# inconsistent or wrong-arithmetic again.
+# ═══════════════════════════════════════════════════════════════════════
+
+def _extract_budget_amount(draft: str, labels: List[str]):
+    """Amount on a budget row whose label matches any of `labels`. None if not found."""
+    for lab in labels:
+        for pat in [
+            lab + r'[^\n|]*\|\s*(?:\$|€|£)?\s*(-?[\d][\d,]{2,})',   # markdown table cell
+            lab + r'\b[^\n\d]{0,25}(-?[\d][\d,]{2,})',             # "label ... amount"
+        ]:
+            m = re.search(pat, draft, re.IGNORECASE)
+            if m:
+                try:
+                    v = float(m.group(1).replace(',', ''))
+                    if abs(v) >= 100:
+                        return v
+                except ValueError:
+                    pass
+    return None
+
+
+def _extract_transport_total(draft: str, flight_notes, num_travelers):
+    """Total transport cost for ALL travelers. Prefers the transport table's
+    '× N = AMOUNT' (recommended option), then the budget's transport row, then
+    cheapest flight × travelers. None if nothing reliable is found."""
+    m = re.search(r'×\s*\d+\s*=\s*(?:\$|€|£)?\s*([\d][\d,]{2,})', draft)
+    if m:
+        try:
+            v = float(m.group(1).replace(',', ''))
+            if v >= 100:
+                return v
+        except ValueError:
+            pass
+    v = _extract_budget_amount(draft, ['تكلفة النقل', 'النقل', 'المواصلات', 'Transport'])
+    if v:
+        return v
+    p, _ = _cheapest_unit_price(flight_notes, 'transport')
+    if p:
+        return p * max(int(num_travelers or 1), 1)
+    return None
+
+
+def _build_authoritative_budget(transport, hotel, activities, food, num_nights,
+                                user_budget, currency) -> str:
+    """Build the budget section with the math done in code. Single source of truth."""
+    total = transport + hotel + activities + food
+    remaining = user_budget - total
+    rem = _fmt_money(remaining, currency) if remaining >= 0 else "-" + _fmt_money(abs(remaining), currency)
+    rows = [
+        "## 💰 الميزانية",
+        "",
+        "| البند | التكلفة |",
+        "|---|---|",
+        f"| النقل (كل المسافرين) | {_fmt_money(transport, currency)} |",
+        f"| الإقامة ({num_nights} ليالٍ) | {_fmt_money(hotel, currency)} |",
+        f"| الأنشطة والتجارب | {_fmt_money(activities, currency)} |",
+    ]
+    if food and food > 0:
+        rows.append(f"| الطعام | {_fmt_money(food, currency)} |")
+    rows += [
+        f"| **الإجمالي الكلي** | **{_fmt_money(total, currency)}** |",
+        f"| الميزانية المتاحة | {_fmt_money(user_budget, currency)} |",
+        f"| الميزانية المتبقية | {rem} |",
+    ]
+    return "\n".join(rows)
+
+
+def _rebuild_budget_deterministic(draft, user_budget, num_nights, num_travelers,
+                                  currency, travel_style, hotel_notes, flight_notes,
+                                  transport_override=None):
+    """Rebuild the budget from the plan's OWN chosen options, with the math in code.
+    Returns (new_draft, applied: bool, reason: str). SAFE: applies only when the hotel
+    and transport figures are both found AND the recomputed total stays within budget;
+    otherwise returns the draft unchanged so it can never make things worse."""
+    try:
+        if not user_budget:
+            return draft, False, "no budget"
+        nights = max(int(num_nights or 1), 1)
+        night_price = _recommended_hotel_night_price(draft, hotel_notes, travel_style)
+        transport = transport_override if transport_override else _extract_transport_total(draft, flight_notes, num_travelers)
+        activities = _extract_budget_amount(draft, ['الأنشطة والتجارب', 'الأنشطة', 'التجارب', 'Activities']) or 0
+        food = _extract_budget_amount(draft, ['الطعام', 'المأكولات', 'الوجبات', 'Food', 'Dining']) or 0
+        if not night_price or not transport:
+            return draft, False, "low confidence (hotel or transport not found)"
+        hotel = night_price * nights
+        total = transport + hotel + activities + food
+        if total > user_budget:
+            # Recommended hotel × nights doesn't fit — that's a genuine over-budget case,
+            # handled elsewhere. Don't force an over-budget display here.
+            return draft, False, f"authoritative total {int(total):,} over budget {int(user_budget):,}"
+        new_section = _build_authoritative_budget(transport, hotel, activities, food,
+                                                  nights, user_budget, currency)
+        new_draft = _replace_budget_section(draft, new_section)
+        reason = (f"transport={int(transport):,}, hotel={int(night_price):,}×{nights}={int(hotel):,}, "
+                  f"activities={int(activities):,}, food={int(food):,}, total={int(total):,}, "
+                  f"remaining={int(user_budget-total):,}")
+        return new_draft, True, reason
+    except Exception as e:
+        return draft, False, f"error: {e}"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# DETERMINISTIC TRANSPORT — the transport mode, routing and price are chosen
+# IN CODE from a curated table of realistic Egyptian routes, so the LLM can't
+# hallucinate (e.g. a 6-hour "15,000/person" private car to Dahab). Rules:
+#   • a destination with NO airport → fly to the nearest airport + private transfer
+#   • always round trip (رايح جاي)
+#   • luxury / mid-range → prefer flying over a long car ride
+# These are deterministic estimates (EGP); a real flights API can replace the
+# numbers later. Only applies to EGP trips on known Egyptian routes — otherwise
+# it returns None and the LLM's transport is kept (safe fallback).
+# ═══════════════════════════════════════════════════════════════════════
+
+_CITY_SYN = {
+    "دهب": "dahab", "dahab": "dahab",
+    "شرم الشيخ": "sharm el sheikh", "شرم": "sharm el sheikh",
+    "sharm el sheikh": "sharm el sheikh", "sharm": "sharm el sheikh", "sharm el-sheikh": "sharm el sheikh",
+    "الغردقة": "hurghada", "غردقة": "hurghada", "hurghada": "hurghada",
+    "سهل حشيش": "sahl hasheesh", "sahl hasheesh": "sahl hasheesh",
+    "الجونة": "el gouna", "الجونه": "el gouna", "el gouna": "el gouna", "gouna": "el gouna", "elgouna": "el gouna",
+    "سوما باي": "soma bay", "soma bay": "soma bay",
+    "مكادي": "makadi", "makadi": "makadi", "makadi bay": "makadi",
+    "سفاجا": "safaga", "safaga": "safaga",
+    "مرسى علم": "marsa alam", "marsa alam": "marsa alam",
+    "الأقصر": "luxor", "اقصر": "luxor", "luxor": "luxor",
+    "أسوان": "aswan", "اسوان": "aswan", "aswan": "aswan",
+    "القاهرة": "cairo", "قاهرة": "cairo", "cairo": "cairo",
+    "الإسكندرية": "alexandria", "اسكندرية": "alexandria", "alexandria": "alexandria",
+    "العين السخنة": "ain sokhna", "العين السخنه": "ain sokhna", "السخنة": "ain sokhna", "ain sokhna": "ain sokhna", "sokhna": "ain sokhna",
+    "طابا": "taba", "taba": "taba",
+    "نويبع": "nuweiba", "nuweiba": "nuweiba",
+    "رأس سدر": "ras sudr", "راس سدر": "ras sudr", "ras sudr": "ras sudr",
+}
+
+_AR_NAME = {
+    "sharm el sheikh": "شرم الشيخ", "hurghada": "الغردقة", "luxor": "الأقصر",
+    "aswan": "أسوان", "marsa alam": "مرسى علم", "cairo": "القاهرة",
+    "alexandria": "الإسكندرية", "dahab": "دهب", "el gouna": "الجونة",
+    "sahl hasheesh": "سهل حشيش", "soma bay": "سوما باي", "makadi": "مكادي",
+    "safaga": "سفاجا", "taba": "طابا", "nuweiba": "نويبع",
+    "ain sokhna": "العين السخنة", "ras sudr": "رأس سدر",
+}
+
+# destination with NO airport → (nearest airport city, one-way transfer per car EGP, hours)
+_NO_AIRPORT_DEST = {
+    "dahab": ("sharm el sheikh", 2000, 1.5),
+    "nuweiba": ("sharm el sheikh", 2500, 2.5),
+    "taba": ("sharm el sheikh", 3500, 3.0),
+    "el gouna": ("hurghada", 800, 0.5),
+    "sahl hasheesh": ("hurghada", 700, 0.5),
+    "soma bay": ("hurghada", 1000, 1.0),
+    "makadi": ("hurghada", 900, 0.75),
+    "safaga": ("hurghada", 1200, 1.0),
+    "ain sokhna": ("cairo", 2000, 2.0),      # drivable from Cairo — no flight
+    "ras sudr": ("cairo", 2500, 2.5),
+}
+
+# airport city reachable by flight from Cairo → round-trip per-person EGP by style
+_DOMESTIC_RT = {
+    "sharm el sheikh": {"budget": 6000, "mid-range": 9000, "luxury": 12000},
+    "hurghada":        {"budget": 6000, "mid-range": 9000, "luxury": 11000},
+    "luxor":           {"budget": 5000, "mid-range": 7500, "luxury": 10000},
+    "aswan":           {"budget": 6000, "mid-range": 8500, "luxury": 11000},
+    "marsa alam":      {"budget": 7000, "mid-range": 10000, "luxury": 13000},
+}
+
+
+def _norm_city(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = re.split(r'[،,]', s)[0].strip()         # drop country suffix
+    s = re.sub(r'\s+', ' ', s)
+    if s in _CITY_SYN:
+        return _CITY_SYN[s]
+    for k, v in _CITY_SYN.items():
+        if k and k in s:
+            return v
+    return s
+
+
+def _style_key(style: str) -> str:
+    s = (style or "").lower()
+    if any(k in s for k in ['lux', 'luxury', 'فاخر']):
+        return 'luxury'
+    if any(k in s for k in ['budget', 'economy', 'اقتصادي', 'رخيص', 'محدود']):
+        return 'budget'
+    return 'mid-range'
+
+
+def _ar_city(c: str) -> str:
+    return _AR_NAME.get(c, (c or "").title())
+
+
+def _trans_result(mode, hours, total, trav, note, reason):
+    trav = max(int(trav or 1), 1)
+    return {"mode": mode, "hours": hours, "total": int(round(total)),
+            "per_person": int(round(total / trav)), "trav": trav,
+            "note": note, "reason": reason}
+
+
+def _compute_transport(question, destination, num_travelers, travel_style, currency):
+    """Deterministic transport for EGP Egyptian trips. Returns a dict, or None (skip)
+    when the currency/route isn't covered — so it can never make things worse."""
+    try:
+        if 'ج.م' not in (currency or '') and 'EGP' not in (currency or '').upper():
+            return None
+        trav = max(int(num_travelers or 1), 1)
+        style = _style_key(travel_style)
+        to_city = _norm_city(destination)
+        if not to_city or to_city not in _CITY_SYN.values():
+            mto = re.search(r'\bto\s+(.+?)[\.\n]', question or '', re.IGNORECASE)
+            if mto:
+                to_city = _norm_city(mto.group(1))
+        mfrom = re.search(r'from\s+(.+?)\s+to\s+', question or '', re.IGNORECASE)
+        from_city = _norm_city(mfrom.group(1)) if mfrom else 'cairo'
+        if from_city not in _CITY_SYN.values():
+            from_city = 'cairo'
+        if not to_city or to_city == from_city:
+            return None
+
+        # Case A — destination has NO airport → fly to nearest airport + transfer
+        if to_city in _NO_AIRPORT_DEST:
+            airport, xfer_oneway, xfer_hrs = _NO_AIRPORT_DEST[to_city]
+            cars = max((trav + 2) // 3, 1)              # ~3 people per private car
+            if airport == 'cairo':                      # drivable from Cairo — no flight
+                total = xfer_oneway * 2 * cars
+                return _trans_result(
+                    mode=f"نقل خاص (سيارة فاخرة) من {_ar_city(from_city)} إلى {_ar_city(to_city)}",
+                    hours=f"~{xfer_hrs} ساعة", total=total, trav=trav,
+                    note="رايح جاي (ذهاب وعودة)",
+                    reason=f"{_ar_city(to_city)} قريبة وتُوصل بالسيارة مباشرة، فالنقل الخاص أريح وأوفر من الطيران")
+            flight_pp = _DOMESTIC_RT.get(airport, {}).get(style)
+            if not flight_pp:
+                return None
+            total = flight_pp * trav + xfer_oneway * 2 * cars
+            return _trans_result(
+                mode=f"طيران {_ar_city(from_city)} ← {_ar_city(airport)} + نقل خاص إلى {_ar_city(to_city)}",
+                hours=f"طيران ~1 ساعة + نقل ~{xfer_hrs} ساعة", total=total, trav=trav,
+                note="رايح جاي (ذهاب وعودة)",
+                reason=(f"{_ar_city(to_city)} ملهاش مطار — فالأفضل الطيران لأقرب مطار "
+                        f"({_ar_city(airport)}) ثم نقل خاص، وده أريح وأسرع بكتير من 6-8 ساعات بالسيارة"))
+
+        # Case B — destination has its own airport → direct flight
+        if to_city in _DOMESTIC_RT:
+            flight_pp = _DOMESTIC_RT[to_city].get(style)
+            if not flight_pp:
+                return None
+            total = flight_pp * trav
+            return _trans_result(
+                mode=f"طيران {_ar_city(from_city)} ← {_ar_city(to_city)}",
+                hours="~1 ساعة", total=total, trav=trav,
+                note="رايح جاي (ذهاب وعودة)",
+                reason="رحلة طيران مباشرة ومريحة تناسب أسلوب السفر")
+        return None
+    except Exception:
+        return None
+
+
+def _build_transport_section(info, currency) -> str:
+    pp = _fmt_money(info["per_person"], currency)
+    tot = _fmt_money(info["total"], currency)
+    return "\n".join([
+        "## ✈️ النقل",
+        "",
+        "| وسيلة النقل | المدة | التكلفة/فرد | الإجمالي (عدد المسافرين) | الملاحظات |",
+        "|---|---|---|---|---|",
+        f"| {info['mode']} | {info['hours']} | {pp} | {pp} × {info['trav']} = {tot} | {info['note']} |",
+        "",
+        f"🏆 توصية الـAI: {info['mode']} — {info['reason']}.",
+    ])
+
+
+def _replace_section(draft, header_keywords, new_section) -> str:
+    """Replace a markdown section (its header line through to the next header) with
+    new_section. Returns the draft unchanged if no matching header is found."""
+    kw = "|".join(re.escape(k) for k in header_keywords)
+    hdr = re.compile(r'(^|\n)[ \t]*#{1,4}[ \t]*[^\n]*(?:' + kw + r')[^\n]*', re.IGNORECASE)
+    m = hdr.search(draft)
+    if not m:
+        return draft
+    start = m.start() if m.start() == 0 else m.start() + 1
+    rest = draft[m.end():]
+    nxt = re.search(r'\n[ \t]*#{1,4}[ \t]+\S', rest)
+    end = (m.end() + nxt.start()) if nxt else len(draft)
+    return draft[:start].rstrip() + "\n\n" + new_section + "\n\n" + draft[end:].lstrip()
+
+
 def _force_budget_fit(resp: str, flight_notes, hotel_notes, user_budget, num_nights,
                       num_travelers, max_transport_per_person, max_hotel_per_night, currency,
                       travel_style="luxury"):
@@ -2999,6 +3290,39 @@ Draft to fix:
             else:
                 print(f"[CODE-LEVEL] Food-consistency pass rejected (food={new_food}, total={int(new_total):,}, "
                       f"over={chk['is_over_budget']}) — keeping original")
+
+    # ══════════════════════════════════════════════════════════════
+    # DETERMINISTIC TRANSPORT + BUDGET — single source of truth for the transport
+    # choice/price AND all budget numbers. Transport is chosen in code (fly to the
+    # nearest airport + transfer for no-airport destinations, round trip, realistic
+    # prices) so the LLM can't hallucinate it; the budget is then rebuilt in code
+    # from that transport + the recommended hotel × nights. Transport is committed
+    # ONLY when the whole budget fits, so the transport table and the budget can
+    # never disagree. On any doubt, the draft is left untouched.
+    # ══════════════════════════════════════════════════════════════
+    try:
+        if user_budget:
+            _dest = (state.get('plan') or {}).get('destination', '')
+            t_info = _compute_transport(state.get('question', ''), _dest,
+                                        num_travelers, travel_style, cur_sym)
+            override = t_info["total"] if t_info else None
+            resp_bud, bud_applied, bud_reason = _rebuild_budget_deterministic(
+                resp, user_budget, num_nights, num_travelers, cur_sym, travel_style,
+                state.get("hotel_notes"), state.get("flight_notes"),
+                transport_override=override)
+            if bud_applied:
+                resp = resp_bud
+                if t_info:
+                    resp = _replace_section(
+                        resp, ["وسائل النقل", "النقل", "المواصلات", "Transport", "Flights"],
+                        _build_transport_section(t_info, cur_sym))
+                    print(f"[CODE-LEVEL] Deterministic transport applied: {t_info['mode']} "
+                          f"(total={t_info['total']:,})")
+                print(f"[CODE-LEVEL] Deterministic budget rebuilt: {bud_reason}")
+            else:
+                print(f"[CODE-LEVEL] Deterministic transport/budget NOT applied ({bud_reason}) — keeping draft")
+    except Exception as _tb_err:
+        print(f"[CODE-LEVEL] Deterministic transport/budget error (ignored): {_tb_err}")
 
     # ══════════════════════════════════════════════════════════════
     # HOTEL ↔ BUDGET CONSISTENCY — the budget's hotel line MUST reflect the
