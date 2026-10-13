@@ -947,6 +947,18 @@ You validate the LOGIC and COMPLETENESS of the travel plan.
 - For luxury travelers, the recommended hotel should be the MOST luxurious, not "best value".
 - ALL 3 hotel options MUST be shown in the hotels table. If only 1 hotel is shown: -10 points.
 
+## LOGICAL CONTRADICTIONS — READ THE WHOLE PLAN AND CATCH THE OBVIOUS ONES (score < 75 if found):
+Cross-check the budget table against the day-by-day itinerary. These are contradictions a careful
+reader spots instantly — if you find one it is a FAIL: set the score below 75, set has_critical TRUE,
+and add a clear Arabic fix instruction telling the writer to go back and fix it.
+- FOOD vs RESTAURANTS: if the budget shows الطعام / Food = 0 (or "مشمول في الفندق") BUT the itinerary
+  schedules ANY paid outside restaurant/meal with a price ("مطعم ... (300 ج.م للشخص)"), that is a
+  CONTRADICTION. The food row MUST equal the sum of those paid meals × travelers. fix_instructions:
+  "الطعام مكتوب 0 بينما الخطة فيها مطاعم مدفوعة — احسب الطعام من المطاعم المذكورة وحدّث الإجمالي والمتبقي."
+- Any budget number that disagrees with the same thing elsewhere in the plan (hotel / transport /
+  meals / activities) is a contradiction — send it back.
+- Money left unused while an item is shown as 0 / free, or a plan that looks thin for the budget → send back.
+
 ## Transport display validation
 - Transport prices MUST show both per-person AND total for all travelers.
 - If 3 travelers and only total is shown without per-person breakdown: -5 points.
@@ -1990,13 +2002,51 @@ def _build_authoritative_budget(transport, hotel, activities, food, num_nights,
         f"| الأنشطة والتجارب | {_fmt_money(activities, currency)} |",
     ]
     if food and food > 0:
-        rows.append(f"| الطعام | {_fmt_money(food, currency)} |")
+        rows.append(f"| الطعام (مطاعم خارجية) | {_fmt_money(food, currency)} |")
+    else:
+        rows.append("| الطعام | 0 (مشمول في الفندق) |")
     rows += [
         f"| **الإجمالي الكلي** | **{_fmt_money(total, currency)}** |",
         f"| الميزانية المتاحة | {_fmt_money(user_budget, currency)} |",
         f"| الميزانية المتبقية | {rem} |",
     ]
     return "\n".join(rows)
+
+
+def _compute_food_from_itinerary(draft: str, num_travelers):
+    """Sum every PAID outside-restaurant meal scheduled in the day-by-day plan.
+    The itinerary lists meals like 'العشاء: ... مطعم X (300-400 ج.م للشخص)'. Returns
+    (total_EGP, found): per-person prices × travelers, a range taking its midpoint.
+    Lines whose meal is covered by the hotel board are skipped, so food=0 stays 0 only
+    when there is genuinely no paid outside meal. This kills the 'food = 0 while the plan
+    lists restaurants' contradiction by computing food from the plan itself."""
+    try:
+        trav = max(int(num_travelers or 1), 1)
+        meal_kw = ('عشاء', 'غداء', 'فطور', 'إفطار', 'افطار', 'مطعم',
+                   'dinner', 'lunch', 'breakfast', 'restaurant')
+        incl_kw = ('مشمول', 'included', 'ضمن الفندق', 'في الفندق', 'بوفيه الفندق', 'بالفندق')
+        total = 0.0
+        found = False
+        for line in draft.splitlines():
+            if not any(k in line for k in meal_kw):
+                continue
+            if any(k in line for k in incl_kw):
+                continue  # covered by the hotel's own board — no extra cost
+            # per-person RANGE: "300-400 ج.م للشخص"
+            m = re.search(r'([\d,]{2,})\s*(?:-|–|—|إلى|to)\s*([\d,]{2,})\s*'
+                          r'(?:ج\.م|EGP|جنيه)?\s*(?:/?\s*(?:للشخص|للفرد|per\s*person|pp))',
+                          line, re.IGNORECASE)
+            if m:
+                lo = float(m.group(1).replace(',', '')); hi = float(m.group(2).replace(',', ''))
+                total += (lo + hi) / 2.0 * trav; found = True; continue
+            # per-person SINGLE: "250 ج.م للشخص"
+            m2 = re.search(r'([\d,]{2,})\s*(?:ج\.م|EGP|جنيه)?\s*'
+                           r'(?:/?\s*(?:للشخص|للفرد|per\s*person|pp))', line, re.IGNORECASE)
+            if m2:
+                total += float(m2.group(1).replace(',', '')) * trav; found = True
+        return int(round(total)), found
+    except Exception:
+        return 0, False
 
 
 def _rebuild_budget_deterministic(draft, user_budget, num_nights, num_travelers,
@@ -2013,7 +2063,10 @@ def _rebuild_budget_deterministic(draft, user_budget, num_nights, num_travelers,
         night_price = _recommended_hotel_night_price(draft, hotel_notes, travel_style)
         transport = transport_override if transport_override else _extract_transport_total(draft, flight_notes, num_travelers)
         activities = _extract_budget_amount(draft, ['الأنشطة والتجارب', 'الأنشطة', 'التجارب', 'Activities']) or 0
-        food = _extract_budget_amount(draft, ['الطعام', 'المأكولات', 'الوجبات', 'Food', 'Dining']) or 0
+        # Food is computed FROM THE ITINERARY (the real paid meals), not trusted from the
+        # LLM's budget row — that's what was lying ("0 / included" while restaurants were scheduled).
+        food_itin, has_meals = _compute_food_from_itinerary(draft, num_travelers)
+        food = food_itin if has_meals else (_extract_budget_amount(draft, ['الطعام', 'المأكولات', 'الوجبات', 'Food', 'Dining']) or 0)
         if not night_price or not transport:
             return draft, False, "low confidence (hotel or transport not found)"
         hotel = night_price * nights
