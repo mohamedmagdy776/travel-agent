@@ -1977,6 +1977,118 @@ def _recommended_hotel_night_price(draft: str, hotel_notes, travel_style: str):
     return None
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# DETERMINISTIC HOTEL PRICE SANITY BANDS — realistic per-night price ranges
+# by destination & star tier. The LLM's hotel prices are CLAMPED into these
+# bands in code, so a hallucinated 2,079 EGP for a 5-star in Dahab (real
+# ~6,400) is pulled up to a realistic figure, and an inflated 4,000 for a
+# cheap hotel is pulled down. Not the exact live price (that needs a hotel
+# API) but NEVER wildly wrong. EGP bands for Egyptian cities; international
+# destinations use USD bands × FX. (low, high) per night.
+# ═══════════════════════════════════════════════════════════════════════
+
+_HOTEL_BAND_EGP = {  # Egyptian city group -> star -> (low, high) EGP/night
+    'dahab':         {3: (1500, 3200), 4: (2800, 5500), 5: (4800, 9500)},
+    'sharm el sheikh': {3: (2000, 4200), 4: (3500, 7500), 5: (5000, 14000)},
+    'hurghada':      {3: (1800, 3800), 4: (3000, 6800), 5: (4500, 12000)},
+    'el gouna':      {3: (2500, 5000), 4: (4000, 9000), 5: (7000, 16000)},
+    'sahl hasheesh': {3: (3000, 6000), 4: (5000, 10000), 5: (8000, 20000)},
+    'soma bay':      {3: (3000, 6000), 4: (5000, 10000), 5: (8000, 19000)},
+    'makadi':        {3: (2500, 5000), 4: (4000, 8500), 5: (6500, 15000)},
+    'marsa alam':    {3: (2000, 4200), 4: (3500, 8000), 5: (5000, 14000)},
+    'cairo':         {3: (1500, 3500), 4: (3000, 6800), 5: (5000, 13000)},
+    'alexandria':    {3: (1500, 3200), 4: (2800, 6000), 5: (4500, 11000)},
+    'luxor':         {3: (1500, 3300), 4: (3000, 6500), 5: (4500, 12000)},
+    'aswan':         {3: (1500, 3300), 4: (3000, 6500), 5: (4500, 12000)},
+    'taba':          {3: (2000, 4000), 4: (3500, 7000), 5: (5000, 12000)},
+    'nuweiba':       {3: (1500, 3200), 4: (2800, 5500), 5: (4500, 9000)},
+    '_default':      {3: (1500, 3500), 4: (3000, 7000), 5: (5000, 13000)},
+}
+
+_HOTEL_BAND_USD = {  # international region -> star -> (low, high) USD/night
+    'europe':        {3: (90, 180), 4: (150, 340), 5: (280, 850)},
+    'gulf':          {3: (70, 150), 4: (130, 300), 5: (220, 700)},
+    'turkey':        {3: (60, 130), 4: (110, 260), 5: (180, 550)},
+    'levant':        {3: (60, 130), 4: (110, 240), 5: (180, 500)},
+    'north_africa':  {3: (60, 130), 4: (110, 250), 5: (180, 520)},
+    'east_africa':   {3: (70, 150), 4: (130, 300), 5: (220, 650)},
+    'sea':           {3: (35, 90),  4: (90, 230),  5: (160, 600)},
+    'south_asia':    {3: (40, 100), 4: (90, 240),  5: (170, 650)},
+    'east_asia':     {3: (70, 160), 4: (130, 320), 5: (230, 750)},
+    'north_america': {3: (90, 180), 4: (150, 350), 5: (260, 800)},
+    'oceania':       {3: (90, 190), 4: (150, 360), 5: (270, 820)},
+    '_default':      {3: (70, 160), 4: (120, 300), 5: (220, 700)},
+}
+
+
+def _hotel_band(destination: str, stars: int, currency: str):
+    """Return (low, high) realistic per-night price for destination+star tier, in the
+    trip currency. None when we can't place the destination (then no clamp happens)."""
+    star = 5 if stars >= 5 else (3 if stars <= 3 else 4)
+    is_egp = ('ج.م' in (currency or '') or 'EGP' in (currency or '').upper())
+    dest = (destination or '')
+    if is_egp:
+        city = _norm_city(dest)
+        table = _HOTEL_BAND_EGP.get(city)
+        if not table:
+            # only clamp with the generic Egypt band if it really looks Egyptian
+            if _intl_region(dest) is not None:
+                return None  # it's international but priced in EGP — skip (rare)
+            table = _HOTEL_BAND_EGP['_default']
+        return table.get(star)
+    # non-EGP → international region band × FX
+    region = _intl_region(dest)
+    fx = _USD_FX.get((currency or '$').strip())
+    if not fx:
+        return None
+    table = _HOTEL_BAND_USD.get(region or '_default')
+    lo, hi = table.get(star)
+    return (lo * fx, hi * fx)
+
+
+def _clamp_hotel_prices_in_draft(draft: str, destination: str, currency: str):
+    """Clamp every hotel-table nightly price into its realistic band for the destination &
+    star tier. Returns (new_draft, changed). Deterministic — stops hotel-price hallucination."""
+    if not draft:
+        return draft, False
+    price_re = re.compile(
+        r'([\d][\d,]{2,}(?:\.\d+)?)\s*(?:ج\.م|EGP|AED|د\.إ|SAR|ر\.س|EUR|€|£|USD|\$)'
+        r'|(?:\$|€|£)\s*([\d][\d,]{2,}(?:\.\d+)?)')
+    changed = False
+    out = []
+    for line in draft.splitlines():
+        if line.count('|') < 3:
+            out.append(line); continue
+        cells = [c.strip() for c in line.strip().strip('|').split('|')]
+        joined = ' '.join(cells).lower()
+        if ('الفندق' in joined and ('السعر' in joined or 'النجوم' in joined)) or 'hotel name' in joined \
+           or set(''.join(cells)) <= set('-: *'):
+            out.append(line); continue
+        pm = price_re.search(line)
+        if not pm:
+            out.append(line); continue
+        try:
+            price = float((pm.group(1) or pm.group(2)).replace(',', ''))
+        except ValueError:
+            out.append(line); continue
+        if not (200 <= price <= 300000):
+            out.append(line); continue
+        stars = line.count('⭐') + line.count('★')
+        if stars == 0:
+            stars = 4  # assume mid-tier when stars aren't shown
+        band = _hotel_band(destination, stars, currency)
+        if not band:
+            out.append(line); continue
+        lo, hi = band
+        new_price = min(max(price, lo), hi)
+        if abs(new_price - price) > max(1, price * 0.02):
+            old_num = pm.group(1) or pm.group(2)
+            line = line.replace(old_num, f"{int(round(new_price)):,}", 1)
+            changed = True
+        out.append(line)
+    return "\n".join(out), changed
+
+
 def _budget_hotel_line_value(draft: str):
     """Best-effort amount shown on the hotel/accommodation line of the budget table.
     Returns None when unsure."""
@@ -3605,6 +3717,21 @@ Draft to fix:
             else:
                 print(f"[CODE-LEVEL] Food-consistency pass rejected (food={new_food}, total={int(new_total):,}, "
                       f"over={chk['is_over_budget']}) — keeping original")
+
+    # ══════════════════════════════════════════════════════════════
+    # HOTEL PRICE SANITY CLAMP — pull every hallucinated hotel/night price into a
+    # realistic band for the destination & star tier, BEFORE the budget is rebuilt
+    # (so the budget uses the corrected price). Stops the '2,079 for a 5-star in
+    # Dahab' / '4,000 for a cheap hotel' hallucinations deterministically.
+    # ══════════════════════════════════════════════════════════════
+    try:
+        _dest_h = (state.get('plan') or {}).get('destination', '')
+        resp_clamped, clamp_changed = _clamp_hotel_prices_in_draft(resp, _dest_h, cur_sym)
+        if clamp_changed:
+            resp = resp_clamped
+            print("[CODE-LEVEL] Hotel prices clamped to realistic bands")
+    except Exception as _clamp_err:
+        print(f"[CODE-LEVEL] Hotel price clamp error (ignored): {_clamp_err}")
 
     # ══════════════════════════════════════════════════════════════
     # DETERMINISTIC TRANSPORT + BUDGET — single source of truth for the transport
