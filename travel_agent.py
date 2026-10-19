@@ -1891,28 +1891,85 @@ def _build_budget_section(transport, hotel, activities, num_nights, user_budget,
     return "\n".join(lines)
 
 
+def _parse_hotel_table_rows(draft: str):
+    """Parse the hotel comparison table into [(name, price_per_night), …] from the draft.
+    Reads the actual table rows, skipping header/separator rows and the rating/stars columns.
+    This is the STRICT source of truth for hotel prices — never guessed."""
+    rows = []
+    price_re = re.compile(
+        r'([\d][\d,]{2,}(?:\.\d+)?)\s*(?:ج\.م|EGP|AED|د\.إ|SAR|ر\.س|EUR|€|£|USD|\$)'
+        r'|(?:\$|€|£)\s*([\d][\d,]{2,}(?:\.\d+)?)')
+    for line in draft.splitlines():
+        if line.count('|') < 3:                       # need a real table row
+            continue
+        cells = [c.strip() for c in line.strip().strip('|').split('|')]
+        joined = ' '.join(cells).lower()
+        if ('الفندق' in joined and ('السعر' in joined or 'النجوم' in joined)) or 'hotel name' in joined:
+            continue                                  # header row
+        if set(''.join(cells)) <= set('-: *'):        # markdown separator row
+            continue
+        price = None
+        for c in cells:
+            pm = price_re.search(c)
+            if pm:
+                try:
+                    price = float((pm.group(1) or pm.group(2)).replace(',', ''))
+                    break
+                except ValueError:
+                    pass
+        if price and 300 <= price <= 100000 and cells and cells[0]:
+            rows.append((cells[0], price))
+    return rows
+
+
 def _recommended_hotel_night_price(draft: str, hotel_notes, travel_style: str):
-    """Best-effort per-night price of the hotel the plan marked 🏆 توصية الـAI.
-    Conservative: returns None when unsure, so the caller simply does nothing."""
+    """STRICT per-night price of the recommended hotel. Reads the hotel TABLE and matches the
+    🏆-recommended hotel to its row, so the budget's hotel line can ALWAYS equal
+    (recommended hotel price/night) × nights. Only returns None when no hotel table exists at all.
+    This is what stops the recurring '75,000 instead of 85,000' bug."""
     try:
+        rows = _parse_hotel_table_rows(draft)
+        if rows:
+            # 1) match the 🏆-recommended hotel name to a table row
+            mrec = re.search(r'🏆[^\n:]*:\s*([^\n—\-–|]{3,80})', draft)
+            if mrec:
+                name = mrec.group(1).strip()
+                # exact / substring match first
+                for rname, price in rows:
+                    if rname and (rname in name or name in rname):
+                        return price
+                # token-overlap match (handles minor wording differences)
+                nt = set(re.findall(r'[\w؀-ۿ]+', name))
+                best, best_ov = None, 0
+                for rname, price in rows:
+                    ov = len(nt & set(re.findall(r'[\w؀-ۿ]+', rname)))
+                    if ov > best_ov:
+                        best_ov, best = ov, price
+                if best is not None and best_ov >= 1:
+                    return best
+            # 2) no usable 🏆 match → choose by style directly from the real table prices
+            prices = sorted(p for _, p in rows)
+            style = _style_key(travel_style)
+            if style == 'luxury':
+                return prices[-1]          # best hotel the plan listed
+            if style == 'budget':
+                return prices[0]
+            return prices[len(prices) // 2]
+        # 3) no table found → last-resort fallbacks (old behaviour)
         price_re = re.compile(
             r'([\d][\d,]{2,})\s*(?:ج\.م|EGP|AED|د\.إ|SAR|ر\.س|EUR|€|£|USD)'
             r'|(?:\$|€|£)\s*([\d][\d,]{2,})')
-        # 1) locate the recommended hotel name on the 🏆 line, then its price nearby
         mrec = re.search(r'🏆[^\n:]*:\s*([^\n—\-–|]{3,60})', draft)
         if mrec:
             name = mrec.group(1).strip()
             idx = draft.find(name)
             if idx != -1:
-                window = draft[idx: idx + 220]
-                pm = price_re.search(window)
+                pm = price_re.search(draft[idx: idx + 220])
                 if pm:
                     val = float((pm.group(1) or pm.group(2)).replace(',', ''))
                     if 300 <= val <= 50000:
                         return val
-        # 2) luxury fallback: the recommended hotel is the most expensive one
-        style = (travel_style or '').lower()
-        if any(k in style for k in ['lux', 'luxury', 'فاخر']):
+        if _style_key(travel_style) == 'luxury':
             p, _ = _priciest_unit_price(hotel_notes, "hotel")
             return p
     except Exception:
@@ -2184,12 +2241,10 @@ def _trans_result(mode, hours, total, trav, note, reason):
             "note": note, "reason": reason}
 
 
-def _compute_transport(question, destination, num_travelers, travel_style, currency):
-    """Deterministic transport for EGP Egyptian trips. Returns a dict, or None (skip)
-    when the currency/route isn't covered — so it can never make things worse."""
+def _egypt_domestic_transport(question, destination, num_travelers, travel_style):
+    """Deterministic transport for Egyptian DOMESTIC routes (EGP). Returns a dict, or None
+    when the route isn't a known Egyptian one — so the caller can fall through to international."""
     try:
-        if 'ج.م' not in (currency or '') and 'EGP' not in (currency or '').upper():
-            return None
         trav = max(int(num_travelers or 1), 1)
         style = _style_key(travel_style)
         to_city = _norm_city(destination)
@@ -2242,17 +2297,158 @@ def _compute_transport(question, destination, num_travelers, travel_style, curre
         return None
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# DETERMINISTIC INTERNATIONAL FLIGHTS — round-trip ECONOMY prices from Egypt,
+# by region & style, so international transport can't be hallucinated and is
+# ALWAYS round trip (رايح وجاي). Base prices are USD per person round trip;
+# converted to the trip currency. "luxury" = best economy / premium economy
+# (a flight is transit — the luxury goes into the stay, per the agreed rule).
+# ═══════════════════════════════════════════════════════════════════════
+
+_USD_FX = {'$': 1.0, 'ج.م': 50.0, 'EGP': 50.0, '€': 0.92, '£': 0.79, 'ر.س': 3.75, 'د.إ': 3.67}
+
+_INTL_RT_USD = {  # region -> style -> USD round-trip per person (economy)
+    'gulf':          {'budget': 200, 'mid-range': 320, 'luxury': 480},
+    'turkey':        {'budget': 200, 'mid-range': 300, 'luxury': 430},
+    'levant':        {'budget': 180, 'mid-range': 280, 'luxury': 400},
+    'europe':        {'budget': 280, 'mid-range': 450, 'luxury': 650},
+    'north_africa':  {'budget': 220, 'mid-range': 340, 'luxury': 480},
+    'east_africa':   {'budget': 260, 'mid-range': 400, 'luxury': 560},
+    'sea':           {'budget': 450, 'mid-range': 680, 'luxury': 900},
+    'south_asia':    {'budget': 350, 'mid-range': 540, 'luxury': 740},
+    'east_asia':     {'budget': 560, 'mid-range': 820, 'luxury': 1100},
+    'north_america': {'budget': 620, 'mid-range': 950, 'luxury': 1300},
+    'oceania':       {'budget': 900, 'mid-range': 1300, 'luxury': 1700},
+}
+
+_INTL_HOURS = {
+    'gulf': '~3 ساعات / ~3 hrs', 'turkey': '~2 ساعة / ~2 hrs', 'levant': '~1.5 ساعة / ~1.5 hrs',
+    'europe': '~4-5 ساعات / ~4-5 hrs', 'north_africa': '~5 ساعات / ~5 hrs',
+    'east_africa': '~4 ساعات / ~4 hrs', 'sea': '~9 ساعات / ~9 hrs', 'south_asia': '~6 ساعات / ~6 hrs',
+    'east_asia': '~11 ساعة / ~11 hrs', 'north_america': '~12 ساعة / ~12 hrs', 'oceania': '~16 ساعة / ~16 hrs',
+}
+
+# keyword -> region. Latin keys are matched on word boundaries; Arabic keys by substring.
+_INTL_REGION = {
+    'uae': 'gulf', 'dubai': 'gulf', 'abu dhabi': 'gulf', 'sharjah': 'gulf',
+    'الإمارات': 'gulf', 'الامارات': 'gulf', 'دبي': 'gulf', 'أبو ظبي': 'gulf', 'ابوظبي': 'gulf', 'الشارقة': 'gulf',
+    'saudi': 'gulf', 'riyadh': 'gulf', 'jeddah': 'gulf', 'السعودية': 'gulf', 'الرياض': 'gulf', 'جدة': 'gulf', 'مكة': 'gulf', 'المدينة': 'gulf',
+    'qatar': 'gulf', 'doha': 'gulf', 'قطر': 'gulf', 'الدوحة': 'gulf',
+    'kuwait': 'gulf', 'الكويت': 'gulf', 'bahrain': 'gulf', 'البحرين': 'gulf',
+    'muscat': 'gulf', 'مسقط': 'gulf', 'سلطنة عمان': 'gulf',
+    'turkey': 'turkey', 'istanbul': 'turkey', 'antalya': 'turkey', 'تركيا': 'turkey', 'اسطنبول': 'turkey', 'إسطنبول': 'turkey', 'أنطاليا': 'turkey', 'انطاليا': 'turkey',
+    'jordan': 'levant', 'amman': 'levant', 'الأردن': 'levant', 'الاردن': 'levant', 'عمان': 'levant', 'lebanon': 'levant', 'beirut': 'levant', 'لبنان': 'levant', 'بيروت': 'levant',
+    'spain': 'europe', 'madrid': 'europe', 'barcelona': 'europe', 'seville': 'europe', 'إسبانيا': 'europe', 'اسبانيا': 'europe', 'مدريد': 'europe', 'برشلونة': 'europe', 'إشبيلية': 'europe',
+    'italy': 'europe', 'rome': 'europe', 'milan': 'europe', 'venice': 'europe', 'إيطاليا': 'europe', 'ايطاليا': 'europe', 'روما': 'europe', 'ميلان': 'europe', 'البندقية': 'europe',
+    'france': 'europe', 'paris': 'europe', 'فرنسا': 'europe', 'باريس': 'europe',
+    'london': 'europe', 'england': 'europe', 'britain': 'europe', 'بريطانيا': 'europe', 'لندن': 'europe', 'إنجلترا': 'europe',
+    'germany': 'europe', 'berlin': 'europe', 'munich': 'europe', 'ألمانيا': 'europe', 'المانيا': 'europe', 'برلين': 'europe', 'ميونخ': 'europe',
+    'switzerland': 'europe', 'zurich': 'europe', 'geneva': 'europe', 'سويسرا': 'europe', 'زيورخ': 'europe', 'جنيف': 'europe',
+    'greece': 'europe', 'athens': 'europe', 'اليونان': 'europe', 'أثينا': 'europe', 'اثينا': 'europe',
+    'netherlands': 'europe', 'amsterdam': 'europe', 'هولندا': 'europe', 'أمستردام': 'europe',
+    'austria': 'europe', 'vienna': 'europe', 'النمسا': 'europe', 'فيينا': 'europe',
+    'czech': 'europe', 'prague': 'europe', 'تشيك': 'europe', 'براغ': 'europe',
+    'portugal': 'europe', 'lisbon': 'europe', 'البرتغال': 'europe', 'لشبونة': 'europe',
+    'hungary': 'europe', 'budapest': 'europe', 'المجر': 'europe', 'بودابست': 'europe',
+    'morocco': 'north_africa', 'marrakech': 'north_africa', 'casablanca': 'north_africa', 'المغرب': 'north_africa', 'مراكش': 'north_africa', 'الدار البيضاء': 'north_africa',
+    'tunisia': 'north_africa', 'تونس': 'north_africa', 'algeria': 'north_africa', 'الجزائر': 'north_africa',
+    'kenya': 'east_africa', 'nairobi': 'east_africa', 'كينيا': 'east_africa', 'tanzania': 'east_africa', 'zanzibar': 'east_africa', 'تنزانيا': 'east_africa', 'زنجبار': 'east_africa',
+    'thailand': 'sea', 'bangkok': 'sea', 'phuket': 'sea', 'تايلاند': 'sea', 'بانكوك': 'sea', 'بوكيت': 'sea',
+    'malaysia': 'sea', 'kuala lumpur': 'sea', 'ماليزيا': 'sea', 'كوالالمبور': 'sea',
+    'indonesia': 'sea', 'bali': 'sea', 'jakarta': 'sea', 'إندونيسيا': 'sea', 'اندونيسيا': 'sea', 'بالي': 'sea',
+    'singapore': 'sea', 'سنغافورة': 'sea', 'vietnam': 'sea', 'فيتنام': 'sea',
+    'india': 'south_asia', 'delhi': 'south_asia', 'mumbai': 'south_asia', 'الهند': 'south_asia',
+    'maldives': 'south_asia', 'المالديف': 'south_asia', 'sri lanka': 'south_asia', 'سريلانكا': 'south_asia',
+    'japan': 'east_asia', 'tokyo': 'east_asia', 'اليابان': 'east_asia', 'طوكيو': 'east_asia',
+    'china': 'east_asia', 'الصين': 'east_asia', 'korea': 'east_asia', 'seoul': 'east_asia', 'كوريا': 'east_asia', 'سيول': 'east_asia',
+    'usa': 'north_america', 'america': 'north_america', 'new york': 'north_america', 'washington': 'north_america', 'أمريكا': 'north_america', 'امريكا': 'north_america', 'الولايات المتحدة': 'north_america', 'نيويورك': 'north_america',
+    'canada': 'north_america', 'toronto': 'north_america', 'كندا': 'north_america', 'تورنتو': 'north_america',
+    'australia': 'oceania', 'sydney': 'oceania', 'melbourne': 'oceania', 'أستراليا': 'oceania', 'استراليا': 'oceania', 'سيدني': 'oceania',
+}
+
+
+def _intl_region(text: str):
+    """Detect the destination region for international flight pricing. Latin keys match on word
+    boundaries (so 'oman' never matches inside 'romania'); Arabic keys match by substring."""
+    if not text:
+        return None
+    low = text.lower()
+    # longer keys first so 'abu dhabi' / 'kuala lumpur' win over short fragments
+    for key in sorted(_INTL_REGION, key=len, reverse=True):
+        if key.isascii():
+            if re.search(r'\b' + re.escape(key) + r'\b', low):
+                return _INTL_REGION[key]
+        else:
+            if key in text:
+                return _INTL_REGION[key]
+    return None
+
+
+def _international_transport(question, destination, num_travelers, travel_style, currency):
+    """Deterministic round-trip ECONOMY flight for an international trip from Egypt.
+    Returns a transport dict, or None when the region/currency isn't covered (keep the LLM)."""
+    try:
+        sym = (currency or '$').strip()
+        fx = _USD_FX.get(sym)
+        if not fx:
+            return None
+        region = _intl_region(f"{destination or ''}\n{question or ''}")
+        if not region:
+            return None
+        style = _style_key(travel_style)
+        usd_pp = _INTL_RT_USD[region][style]
+        trav = max(int(num_travelers or 1), 1)
+        pp = usd_pp * fx
+        total = pp * trav
+        dest_disp = (destination or '').split(',')[0].strip() or region.replace('_', ' ').title()
+        return _trans_result(
+            mode=f"طيران اقتصادي (رايح وجاي) إلى {dest_disp} / Economy flight (round trip) to {dest_disp}",
+            hours=_INTL_HOURS.get(region, ''), total=total, trav=trav,
+            note="رحلة رايح وجاي — درجة اقتصادية / round trip, economy",
+            reason=("أفضل رحلة اقتصادية (مباشرة أو بأقل توقف) تناسب الميزانية؛ السعر ذهاب وعودة للفرد — "
+                    "الطيران وسيلة انتقال، والفخامة في الإقامة / best-value round-trip economy; the flight "
+                    "is transit, the luxury goes into the stay"))
+    except Exception:
+        return None
+
+
+def _compute_transport(question, destination, num_travelers, travel_style, currency):
+    """Deterministic transport orchestrator. Tries the Egyptian DOMESTIC table first (EGP trips),
+    then the INTERNATIONAL round-trip table. Returns a dict, or None to keep the LLM's transport."""
+    try:
+        is_egp = ('ج.م' in (currency or '') or 'EGP' in (currency or '').upper())
+        if is_egp:
+            dom = _egypt_domestic_transport(question, destination, num_travelers, travel_style)
+            if dom:
+                return dom
+        return _international_transport(question, destination, num_travelers, travel_style, currency)
+    except Exception:
+        return None
+
+
 def _build_transport_section(info, currency) -> str:
     pp = _fmt_money(info["per_person"], currency)
     tot = _fmt_money(info["total"], currency)
+    is_egp = ('ج.م' in (currency or '') or 'EGP' in (currency or '').upper())
+    if is_egp:
+        return "\n".join([
+            "## ✈️ النقل",
+            "",
+            "| وسيلة النقل | المدة | التكلفة/فرد (رايح وجاي) | الإجمالي (عدد المسافرين) | الملاحظات |",
+            "|---|---|---|---|---|",
+            f"| {info['mode']} | {info['hours']} | {pp} | {pp} × {info['trav']} = {tot} | {info['note']} |",
+            "",
+            f"🏆 توصية الـAI: {info['mode']} — {info['reason']}.",
+        ])
+    # non-EGP (English-leaning) draft → English headers
     return "\n".join([
-        "## ✈️ النقل",
+        "## ✈️ Transport",
         "",
-        "| وسيلة النقل | المدة | التكلفة/فرد | الإجمالي (عدد المسافرين) | الملاحظات |",
+        "| Transport | Duration | Cost/Person (round trip) | Total (all travelers) | Notes |",
         "|---|---|---|---|---|",
         f"| {info['mode']} | {info['hours']} | {pp} | {pp} × {info['trav']} = {tot} | {info['note']} |",
         "",
-        f"🏆 توصية الـAI: {info['mode']} — {info['reason']}.",
+        f"🏆 AI Recommendation: {info['mode']} — {info['reason']}.",
     ])
 
 
@@ -2979,6 +3175,72 @@ Budget: {chr(10).join('- ' + n for n in state.get('budget_notes', []))}
     return state
 
 
+def _ensure_visa_section(resp: str, visa_notes) -> str:
+    """HARD GUARANTEE: the full itinerary must ALWAYS contain a Visa & Entry section.
+    If the draft has none, build one from visa_notes (or a safe default) and insert it
+    just before the budget section (or at the end). No-op if a visa section already exists."""
+    if not resp:
+        return resp
+    low = resp.lower()
+    has_visa = ('🛂' in resp or 'تأشير' in resp or 'التأشيرة' in resp
+                or re.search(r'\bvisa\b|\bentry requirements?\b', low))
+    if has_visa:
+        return resp
+    notes = [n.strip() for n in (visa_notes or []) if n and n.strip()]
+    body = '\n'.join(f"- {n}" for n in notes) if notes else \
+        "- يرجى التحقق من متطلبات التأشيرة وصلاحية جواز السفر قبل السفر / Please verify visa requirements and passport validity before travel."
+    section = f"\n\n## 🛂 التأشيرة والدخول\n\n{body}\n"
+    m = re.search(r'\n\s*#{0,6}\s*💰', resp)  # insert before the budget block if present
+    if m:
+        return resp[:m.start()] + section + "\n" + resp[m.start():]
+    return resp.rstrip() + section
+
+
+def _strip_budget_process_sections(resp: str) -> str:
+    """Hide Claude's internal budget 'working' from the user: keep only ONE final budget table.
+    Removes 'Final Adjustments' / 'To utilize the remaining' narrative sections and any earlier
+    DUPLICATE budget tables, keeping the LAST budget table as the single clean one."""
+    if not resp:
+        return resp
+    lines = resp.split('\n')
+    def heading_text(l):
+        m = re.match(r'^\s*#{1,6}\s+(.*\S)\s*$', l)
+        if m:
+            return m.group(1)
+        m = re.match(r'^\s*\*\*([^*]+)\*\*\s*:?\s*$', l)
+        return m.group(1) if m else None
+    sections, cur = [], [None, []]
+    for l in lines:
+        if heading_text(l) is not None:
+            sections.append(cur)
+            cur = [l, []]
+        else:
+            cur[1].append(l)
+    sections.append(cur)
+    drop_re = re.compile(r'final\s+adjustments?|updated\s+budget|to\s+utilize\s+the\s+remaining|'
+                         r'التعديلات\s+النهائية|الميزانية\s+المحدّ?ثة|تعديلات\s+الميزانية', re.IGNORECASE)
+    budget_re = re.compile(r'budget\s+breakdown|💰|الميزانية', re.IGNORECASE)
+    budget_idxs = [i for i, s in enumerate(sections) if s[0] and budget_re.search(s[0])]
+    keep_budget = budget_idxs[-1] if budget_idxs else None
+    out = []
+    for i, s in enumerate(sections):
+        head = s[0]
+        htext = heading_text(head) if head else None
+        if htext and drop_re.search(htext) and i != keep_budget:
+            continue
+        if head and budget_re.search(head) and keep_budget is not None and i != keep_budget:
+            continue
+        if i == keep_budget and head:
+            s = [re.sub(r'\b(updated|final)\s+', '', head, flags=re.IGNORECASE), s[1]]
+        out.append(s)
+    res = []
+    for head, body in out:
+        if head is not None:
+            res.append(head)
+        res.extend(body)
+    return re.sub(r'\n{3,}', '\n\n', '\n'.join(res)).strip() + '\n'
+
+
 def finalizer_node(state: GraphState) -> GraphState:
     num_days = state['plan']['num_days']
     travel_style = state['plan'].get('travel_style', 'mid-range')
@@ -3424,6 +3686,20 @@ Draft to fix:
                               f"over={chk_h['is_over_budget']}) — keeping original")
     except Exception as _hc_err:
         print(f"[CODE-LEVEL] Hotel-consistency pass error (ignored): {_hc_err}")
+
+    # ══════════════════════════════════════════════════════════════
+    # STRUCTURE GUARANTEES (additive, run after all budget work):
+    #  • Hide the internal budget 'working' — keep ONE clean final budget table.
+    #  • The Visa & Entry section must ALWAYS be present (even for domestic trips).
+    # ══════════════════════════════════════════════════════════════
+    try:
+        resp = _strip_budget_process_sections(resp)
+        _before_visa = resp
+        resp = _ensure_visa_section(resp, state.get('visa_notes', []))
+        if resp != _before_visa:
+            print("[CODE-LEVEL] Visa section was missing — injected from visa_notes")
+    except Exception as _struct_err:
+        print(f"[CODE-LEVEL] Structure-guarantee pass error (ignored): {_struct_err}")
 
     # ══════════════════════════════════════════════════════════════
     # CURRENCY NORMALIZATION — HARD GUARANTEE: force the whole output into the
