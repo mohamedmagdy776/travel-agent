@@ -1989,7 +1989,7 @@ def _recommended_hotel_night_price(draft: str, hotel_notes, travel_style: str):
 
 _HOTEL_BAND_EGP = {  # Egyptian city group -> star -> (low, high) EGP/night
     'dahab':         {3: (1500, 3200), 4: (2800, 5500), 5: (4800, 9500)},
-    'sharm el sheikh': {3: (2000, 4200), 4: (3500, 7500), 5: (5000, 14000)},
+    'sharm el sheikh': {3: (2000, 4500), 4: (3500, 9000), 5: (5500, 15000)},
     'hurghada':      {3: (1800, 3800), 4: (3000, 6800), 5: (4500, 12000)},
     'el gouna':      {3: (2500, 5000), 4: (4000, 9000), 5: (7000, 16000)},
     'sahl hasheesh': {3: (3000, 6000), 4: (5000, 10000), 5: (8000, 20000)},
@@ -2087,6 +2087,251 @@ def _clamp_hotel_prices_in_draft(draft: str, destination: str, currency: str):
             changed = True
         out.append(line)
     return "\n".join(out), changed
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# REAL RECOMMENDED-HOTEL PRICE FROM LIVE SEARCH — the bands above only keep a
+# price "realistic"; they can't produce the TRUE price. So for the ONE hotel the
+# plan recommends (the hotel that drives the budget and the one the user checks
+# against Google), we pull the actual nightly price from live Tavily search and
+# use it — clamped to the band only as a safety net. Free (uses the Tavily key
+# already in the app). Best-effort: when search returns no usable price, we fall
+# back to the band-clamped value, so this is NEVER worse than before.
+# ═══════════════════════════════════════════════════════════════════════
+
+_CCY_WORD_TO_SYM = {
+    'usd': '$', 'us$': '$', 'dollar': '$', 'dollars': '$',
+    'egp': 'ج.م', 'le': 'ج.م', 'جنيه': 'ج.م', 'ج.م': 'ج.م',
+    'egyptian pound': 'ج.م', 'egyptian pounds': 'ج.م', 'pound': 'ج.م', 'pounds': 'ج.م',
+    'eur': '€', 'euro': '€', 'euros': '€',
+    'gbp': '£', 'sar': 'ر.س', 'riyal': 'ر.س', 'riyals': 'ر.س', 'ر.س': 'ر.س',
+    'aed': 'د.إ', 'dirham': 'د.إ', 'dirhams': 'د.إ', 'د.إ': 'د.إ',
+}
+
+
+def _tavily_text(res) -> str:
+    """Flatten a TavilySearchResults result (list of dicts, or a string) into one text blob."""
+    if isinstance(res, str):
+        return res
+    if isinstance(res, list):
+        parts = []
+        for r in res:
+            if isinstance(r, dict):
+                parts.append(f"{r.get('content', '')} {r.get('title', '')}")
+            else:
+                parts.append(str(r))
+        return "  ".join(parts)
+    return str(res or "")
+
+
+def _parse_night_prices_usd(text: str):
+    """Pull per-night-looking prices out of search text and normalise each to USD, using the
+    currency symbol/word next to the number. Returns a list of USD floats in a sane nightly range."""
+    if not text:
+        return []
+    low = text.lower()
+    out = []
+
+    def _add(amount_str, sym):
+        try:
+            amt = float(amount_str.replace(',', ''))
+        except ValueError:
+            return
+        fx = _USD_FX.get(sym)
+        if not fx:
+            return
+        usd = amt / fx
+        if 20 <= usd <= 3000:            # a plausible nightly rate in USD
+            out.append(usd)
+
+    # symbol BEFORE the number:  $120 / US$120 / €95 / £80
+    for m in re.finditer(r'(us\$|\$|€|£)\s*([\d][\d,]{1,6}(?:\.\d{1,2})?)', low):
+        _add(m.group(2), {'us$': '$', '$': '$', '€': '€', '£': '£'}[m.group(1)])
+    # number BEFORE a currency word/code:  6,500 EGP / 120 usd / 95 euro / 450 egyptian pounds
+    for m in re.finditer(
+        r'([\d][\d,]{1,6}(?:\.\d{1,2})?)\s*'
+        r'(egyptian pounds?|us\$|usd|egp|eur|euros?|gbp|sar|aed|dollars?|pounds?|riyals?|dirhams?|le|جنيه|ج\.م|ر\.س|د\.إ)',
+        low):
+        tok = m.group(2).strip()
+        sym = _CCY_WORD_TO_SYM.get(tok)
+        if sym:
+            _add(m.group(1), sym)
+    return out
+
+
+_HOTEL_PRICE_CACHE = {}   # (name, dest, currency) -> price or None — one live search per hotel per run
+
+
+def _real_hotel_night_price(hotel_name: str, destination: str, currency: str):
+    """Live per-night price for a specific hotel, in the trip currency, via Tavily search.
+    Runs several query variants, pools every price found, trims promo 'from' low-outliers, and
+    returns the MEDIAN (the typical real rate). Returns None only when search finds no price at
+    all — so the caller can show a realistic estimate instead of a hallucinated lowball.
+    Cached per (hotel, destination, currency) so the review loop and finalizer share one search."""
+    try:
+        if not hotel_name:
+            return None
+        fx = _USD_FX.get((currency or '$').strip())
+        if not fx:
+            return None
+        dest = (destination or '').split(',')[0].strip()
+        ckey = (hotel_name.strip().lower(), dest.lower(), (currency or '$').strip())
+        if ckey in _HOTEL_PRICE_CACHE:
+            return _HOTEL_PRICE_CACHE[ckey]
+        queries = [
+            f"{hotel_name} {dest} price per night",
+            f"{hotel_name} {dest} booking price per night 2026",
+            f"{hotel_name} سعر الليلة",
+        ]
+        pooled = []
+        for q in queries:
+            try:
+                pooled += _parse_night_prices_usd(_tavily_text(search_tool.invoke(q.strip())))
+            except Exception:
+                continue
+            if len(pooled) >= 6:         # enough signal — stop searching early
+                break
+        if not pooled:
+            _HOTEL_PRICE_CACHE[ckey] = None
+            return None
+        pooled.sort()
+        median_usd = pooled[len(pooled) // 2]
+        # drop promotional 'from' prices far below the median (keep 55%..300% of median)
+        core = [p for p in pooled if 0.55 * median_usd <= p <= 3.0 * median_usd]
+        if not core:
+            core = pooled
+        core.sort()
+        typical_usd = core[len(core) // 2]
+        result = typical_usd * fx
+        _HOTEL_PRICE_CACHE[ckey] = result
+        return result
+    except Exception:
+        return None
+
+
+def _apply_real_recommended_price(draft: str, destination: str, currency: str):
+    """Rewrite the 🏆-recommended hotel's table price to the REAL live price (clamped to its
+    band). Downstream budget math then uses this real figure. Returns (new_draft, changed)."""
+    try:
+        if not draft:
+            return draft, False
+        mrec = re.search(r'🏆[^\n:]*:\s*([^\n—\-–|]{3,80})', draft)
+        if not mrec:
+            return draft, False
+        rec_name = mrec.group(1).strip()
+        rec_tokens = set(re.findall(r'[\w؀-ۿ]{2,}', rec_name))
+        price_re = re.compile(
+            r'([\d][\d,]{2,}(?:\.\d+)?)\s*(?:ج\.م|EGP|AED|د\.إ|SAR|ر\.س|EUR|€|£|USD|\$)'
+            r'|(?:\$|€|£)\s*([\d][\d,]{2,}(?:\.\d+)?)')
+        lines = draft.splitlines()
+        for i, line in enumerate(lines):
+            if line.count('|') < 3:
+                continue
+            cells = [c.strip() for c in line.strip().strip('|').split('|')]
+            joined = ' '.join(cells).lower()
+            if ('الفندق' in joined and ('السعر' in joined or 'النجوم' in joined)) or 'hotel name' in joined:
+                continue
+            if set(''.join(cells)) <= set('-: *'):
+                continue
+            name_cell = cells[0] if cells else ''
+            name_tokens = set(re.findall(r'[\w؀-ۿ]{2,}', name_cell))
+            if not (name_cell and (name_cell in rec_name or rec_name in name_cell
+                                   or len(rec_tokens & name_tokens) >= 1)):
+                continue
+            pm = price_re.search(line)
+            if not pm:
+                continue
+            try:
+                old = float((pm.group(1) or pm.group(2)).replace(',', ''))
+            except ValueError:
+                continue
+            if not (200 <= old <= 300000):
+                continue
+            real = _real_hotel_night_price(name_cell, destination, currency)
+            stars = line.count('⭐') + line.count('★') or 4
+            band = _hotel_band(destination, stars, currency)
+            if real:
+                # Live price found → trust it; the band only guards against freak extremes.
+                new_price = min(max(real, band[0]), band[1]) if band else real
+                badge = (f"> 🔎 تم التحقق من سعر الفندق مقابل بحث مباشر "
+                         f"(~{int(round(new_price)):,} {currency}/ليلة) — price verified against live search.")
+            elif band:
+                # Search miss → DON'T keep the LLM's possible lowball. Lift to a realistic
+                # typical price (band midpoint) for this star tier & city, so the headline
+                # hotel is never shown far below reality (the '4,800 for an 8,000 resort' bug).
+                lo, hi = band
+                realistic = lo + 0.5 * (hi - lo)
+                new_price = min(max(old, realistic), hi)
+                badge = ("> 🔎 تقدير واقعي للسعر (البحث المباشر لم يرجّع سعرًا مؤكدًا لهذا الفندق) "
+                         "— realistic market estimate.")
+            else:
+                return draft, False
+            # rewrite the shown price only when it is materially different from the real/estimate
+            if abs(new_price - old) > max(1, old * 0.05):
+                old_num = pm.group(1) or pm.group(2)
+                lines[i] = line.replace(old_num, f"{int(round(new_price)):,}", 1)
+            # surface the verification UNDER the hotel recommendation line, so the user can SEE
+            # that the reviewer checked the price against a live search (idempotent — refreshes
+            # an existing badge instead of stacking).
+            for bi, bl in enumerate(lines):
+                if '🏆' in bl and (name_cell in bl or rec_name in bl
+                                   or len(rec_tokens & set(re.findall(r'[\w؀-ۿ]{2,}', bl))) >= 1):
+                    if bi + 1 < len(lines) and '🔎' in lines[bi + 1]:
+                        lines[bi + 1] = badge
+                    else:
+                        lines.insert(bi + 1, badge)
+                    break
+            return "\n".join(lines), True
+        return draft, False
+    except Exception:
+        return draft, False
+
+
+def _verify_recommended_hotel_price(draft: str, destination: str, currency: str,
+                                    travel_style: str = "mid-range"):
+    """REVIEW-LOOP CHECK: live-search the recommended hotel and compare its real price to the
+    price shown in the draft. Returns a dict {name, displayed, real, mismatch, note}. mismatch is
+    True when the shown price differs from reality by more than ~22% — the review loop then sends
+    the plan back to be corrected with the exact real figure."""
+    out = {"name": None, "displayed": None, "real": None, "mismatch": False, "note": ""}
+    try:
+        if not draft:
+            return out
+        rows = _parse_hotel_table_rows(draft)
+        mrec = re.search(r'🏆[^\n:]*:\s*([^\n—\-–|]{3,80})', draft)
+        name = displayed = None
+        if mrec and rows:
+            rn = mrec.group(1).strip()
+            rt = set(re.findall(r'[\w؀-ۿ]{2,}', rn))
+            for rname, price in rows:
+                if rname and (rname in rn or rn in rname
+                              or len(rt & set(re.findall(r'[\w؀-ۿ]{2,}', rname))) >= 1):
+                    name, displayed = rname, price
+                    break
+        if displayed is None:
+            displayed = _recommended_hotel_night_price(draft, None, travel_style)
+        if name is None and mrec:
+            name = mrec.group(1).strip()
+        out["name"], out["displayed"] = name, displayed
+        if not name or not displayed:
+            out["note"] = "تعذّر تحديد الفندق المرشّح للتحقق من سعره."
+            return out
+        real = _real_hotel_night_price(name, destination, currency)
+        out["real"] = real
+        if not real:
+            out["note"] = f"لم يرجع البحث سعرًا مؤكدًا لـ {name} — تم الإبقاء على التقدير الواقعي."
+            return out
+        hi, lo = max(real, displayed), min(real, displayed)
+        if lo > 0 and (hi / lo) > 1.22:
+            out["mismatch"] = True
+            out["note"] = (f"سعر {name} المعروض {int(displayed):,} {currency}/ليلة يختلف عن السعر الحقيقي "
+                           f"من البحث (~{int(real):,} {currency}/ليلة) — إعادة الضبط على الرقم الحقيقي.")
+        else:
+            out["note"] = (f"تم التحقق من سعر {name} مقابل البحث المباشر: "
+                           f"{int(displayed):,} ≈ {int(real):,} {currency}/ليلة ✅")
+    except Exception:
+        pass
+    return out
 
 
 def _budget_hotel_line_value(draft: str):
@@ -2562,6 +2807,82 @@ def _build_transport_section(info, currency) -> str:
         "",
         f"🏆 AI Recommendation: {info['mode']} — {info['reason']}.",
     ])
+
+
+def _enforce_transport_math(resp: str, num_travelers, currency) -> tuple:
+    """UNIVERSAL GUARANTEE — in the transport table, Total MUST equal (per-person × travelers).
+    Anchors on the per-person round-trip cost (the figure the user verifies) and recomputes the
+    total cell. Skips any row that already shows the multiplication (e.g. '7,500 × 2 = 15,000'),
+    so the deterministic transport section is left untouched. This catches every destination the
+    curated route tables don't cover, so '7,500/person but 12,000 for two' can never appear again.
+    Returns (resp, changed)."""
+    try:
+        trav = max(int(num_travelers or 1), 1)
+        if trav < 2 or not resp:
+            return resp, False
+        lines = resp.splitlines()
+        # locate the transport section header
+        start = None
+        for i, ln in enumerate(lines):
+            if re.match(r'\s*#{1,4}\s', ln) and re.search(
+                    r'(وسيلة النقل|المواصلات|النقل|Transport|Flights)', ln, re.IGNORECASE):
+                start = i
+                break
+        if start is None:
+            return resp, False
+        end = len(lines)
+        for j in range(start + 1, len(lines)):
+            if re.match(r'\s*#{1,4}\s', lines[j]):
+                end = j
+                break
+        # find the header row and the per-person / total column indices
+        pp_col = tot_col = hdr_idx = None
+        for k in range(start, end):
+            if lines[k].count('|') < 3:
+                continue
+            cells = [c.strip().lower() for c in lines[k].strip().strip('|').split('|')]
+            for ci, c in enumerate(cells):
+                if pp_col is None and ('فرد' in c or 'per person' in c or 'per-person' in c
+                                       or '/person' in c or 'للفرد' in c):
+                    pp_col = ci
+                if tot_col is None and ('إجمالي' in c or 'الاجمالي' in c or 'المجموع' in c
+                                        or 'total' in c or 'all travelers' in c):
+                    tot_col = ci
+            if pp_col is not None and tot_col is not None:
+                hdr_idx = k
+                break
+        if hdr_idx is None or pp_col is None or tot_col is None or pp_col == tot_col:
+            return resp, False
+        num_re = re.compile(r'([\d][\d,]{2,}(?:\.\d+)?)')
+        changed = False
+        for k in range(hdr_idx + 1, end):
+            if lines[k].count('|') < 3:
+                continue
+            cells = [c.strip() for c in lines[k].strip().strip('|').split('|')]
+            if len(cells) <= max(pp_col, tot_col):
+                continue
+            if set(''.join(cells)) <= set('-: *'):
+                continue
+            tot_cell = cells[tot_col]
+            if '×' in tot_cell or '*' in tot_cell or ' x ' in tot_cell.lower():
+                continue                               # already shows pp × n = total → trust it
+            mpp = num_re.search(cells[pp_col])
+            mtot = num_re.search(tot_cell)
+            if not mpp or not mtot:
+                continue
+            try:
+                pp = float(mpp.group(1).replace(',', ''))
+                tot = float(mtot.group(1).replace(',', ''))
+            except ValueError:
+                continue
+            want = pp * trav
+            if abs(want - tot) > max(1, want * 0.02):
+                cells[tot_col] = tot_cell.replace(mtot.group(1), f"{int(round(want)):,}", 1)
+                lines[k] = '| ' + ' | '.join(cells) + ' |'
+                changed = True
+        return "\n".join(lines), changed
+    except Exception:
+        return resp, False
 
 
 def _replace_section(draft, header_keywords, new_section) -> str:
@@ -3719,13 +4040,28 @@ Draft to fix:
                       f"over={chk['is_over_budget']}) — keeping original")
 
     # ══════════════════════════════════════════════════════════════
+    # REAL RECOMMENDED-HOTEL PRICE — pull the ACTUAL nightly price of the chosen
+    # hotel from live search (free Tavily) and use it, so the headline hotel price
+    # matches reality instead of the LLM's guess. Band-clamped as a safety net; on
+    # any search miss it silently keeps the band value. Runs BEFORE the clamp &
+    # budget so every downstream number uses the real figure.
+    # ══════════════════════════════════════════════════════════════
+    _dest_h = (state.get('plan') or {}).get('destination', '')
+    try:
+        resp_real, real_changed = _apply_real_recommended_price(resp, _dest_h, cur_sym)
+        if real_changed:
+            resp = resp_real
+            print("[CODE-LEVEL] Recommended hotel price set from live search")
+    except Exception as _real_err:
+        print(f"[CODE-LEVEL] Real hotel price lookup error (ignored): {_real_err}")
+
+    # ══════════════════════════════════════════════════════════════
     # HOTEL PRICE SANITY CLAMP — pull every hallucinated hotel/night price into a
     # realistic band for the destination & star tier, BEFORE the budget is rebuilt
     # (so the budget uses the corrected price). Stops the '2,079 for a 5-star in
     # Dahab' / '4,000 for a cheap hotel' hallucinations deterministically.
     # ══════════════════════════════════════════════════════════════
     try:
-        _dest_h = (state.get('plan') or {}).get('destination', '')
         resp_clamped, clamp_changed = _clamp_hotel_prices_in_draft(resp, _dest_h, cur_sym)
         if clamp_changed:
             resp = resp_clamped
@@ -3754,17 +4090,34 @@ Draft to fix:
                 transport_override=override)
             if bud_applied:
                 resp = resp_bud
-                if t_info:
-                    resp = _replace_section(
-                        resp, ["وسائل النقل", "النقل", "المواصلات", "Transport", "Flights"],
-                        _build_transport_section(t_info, cur_sym))
-                    print(f"[CODE-LEVEL] Deterministic transport applied: {t_info['mode']} "
-                          f"(total={t_info['total']:,})")
                 print(f"[CODE-LEVEL] Deterministic budget rebuilt: {bud_reason}")
             else:
-                print(f"[CODE-LEVEL] Deterministic transport/budget NOT applied ({bud_reason}) — keeping draft")
+                print(f"[CODE-LEVEL] Deterministic budget NOT rebuilt ({bud_reason}) — keeping draft budget")
+            # Transport table is committed WHENEVER we have a known route — independent of the
+            # budget rebuild — because the deterministic section is self-consistent by
+            # construction (per-person × travelers = total). This is what stops the transport
+            # table from ever showing inconsistent numbers when the budget rebuild is skipped.
+            if t_info:
+                resp = _replace_section(
+                    resp, ["وسائل النقل", "النقل", "المواصلات", "Transport", "Flights"],
+                    _build_transport_section(t_info, cur_sym))
+                print(f"[CODE-LEVEL] Deterministic transport applied: {t_info['mode']} "
+                      f"(total={t_info['total']:,})")
     except Exception as _tb_err:
         print(f"[CODE-LEVEL] Deterministic transport/budget error (ignored): {_tb_err}")
+
+    # ══════════════════════════════════════════════════════════════
+    # TRANSPORT MATH GUARANTEE — for ANY destination (including those the curated
+    # route tables don't cover), force Total == per-person × travelers in the
+    # transport table. Rows already written as 'pp × n = total' are left alone.
+    # ══════════════════════════════════════════════════════════════
+    try:
+        resp_tm, tm_changed = _enforce_transport_math(resp, num_travelers, cur_sym)
+        if tm_changed:
+            resp = resp_tm
+            print("[CODE-LEVEL] Transport total corrected to per-person × travelers")
+    except Exception as _tm_err:
+        print(f"[CODE-LEVEL] Transport math pass error (ignored): {_tm_err}")
 
     # ══════════════════════════════════════════════════════════════
     # HOTEL ↔ BUDGET CONSISTENCY — the budget's hotel line MUST reflect the
@@ -3827,6 +4180,25 @@ Draft to fix:
             print("[CODE-LEVEL] Visa section was missing — injected from visa_notes")
     except Exception as _struct_err:
         print(f"[CODE-LEVEL] Structure-guarantee pass error (ignored): {_struct_err}")
+
+    # ══════════════════════════════════════════════════════════════
+    # REVIEWER NOTE (user-visible) — show that the recommended hotel's price was
+    # checked against live web search. Only shown when search returned a real
+    # figure, so it's evidence, never noise.
+    # ══════════════════════════════════════════════════════════════
+    try:
+        _pc = (state.get("review") or {}).get("price_check") or {}
+        _pc_note = _pc.get("note")
+        if _pc_note and _pc.get("real") is not None:
+            _note_line = f"\n> 🔎 **تحقّق المراجع من السعر:** {_pc_note}\n"
+            _mbud = re.search(r'\n\s*#{0,6}\s*💰', resp)
+            if _mbud:
+                resp = resp[:_mbud.start()] + _note_line + resp[_mbud.start():]
+            else:
+                resp = resp.rstrip() + "\n" + _note_line
+            print("[CODE-LEVEL] Reviewer price-verification note added to output")
+    except Exception as _note_err:
+        print(f"[CODE-LEVEL] Reviewer note error (ignored): {_note_err}")
 
     # ══════════════════════════════════════════════════════════════
     # CURRENCY NORMALIZATION — HARD GUARANTEE: force the whole output into the
@@ -3964,6 +4336,40 @@ def should_revise(state: GraphState) -> Literal["revise", "finalize"]:
                 state["review"] = review
     # ══════════════════════════════════════════════════════════════
 
+    # ══════════════════════════════════════════════════════════════
+    # REAL HOTEL-PRICE VERIFICATION (loop-level) — the reviewer live-searches the
+    # recommended hotel's price and compares it to what the draft shows. On a
+    # mismatch (>22%) it writes a note, lowers the score, injects the EXACT real
+    # price as a fix instruction, and sends the plan back to revise. Cached, so the
+    # search runs once per hotel. The finalizer stays as the deterministic backstop.
+    # ══════════════════════════════════════════════════════════════
+    price_mismatch = False
+    if state.get("draft"):
+        try:
+            _dest = state['plan'].get('destination', '')
+            _cc, _cs = (state['user_currency'], CURRENCY_SYMBOLS.get(state['user_currency'], '$')) \
+                if state.get('user_currency') else _currency_from_question(state.get('question', ''))
+            _ts = state['plan'].get('travel_style', 'mid-range')
+            pv = _verify_recommended_hotel_price(state["draft"], _dest, _cs, _ts)
+            review["price_check"] = pv
+            if pv.get("mismatch") and pv.get("real") and pv.get("displayed"):
+                price_mismatch = True
+                review["score"] = min(review.get("score", 100), 60)
+                review.setdefault("fix_instructions", []).insert(0,
+                    f"HOTEL PRICE WRONG vs reality: the recommended hotel '{pv.get('name')}' shows "
+                    f"{int(pv['displayed']):,} {_cs}/night, but live web search says the REAL price is "
+                    f"~{int(pv['real']):,} {_cs}/night. Set that hotel's price/night to EXACTLY "
+                    f"{int(pv['real']):,} {_cs} in the hotel table and update the budget hotel line to match. "
+                    f"Do NOT invent a different number.")
+                print(f"[CODE-LEVEL] REVIEWER price check — MISMATCH: '{pv.get('name')}' "
+                      f"displayed={int(pv['displayed']):,}, real={int(pv['real']):,} {_cs} → revise")
+            else:
+                print(f"[CODE-LEVEL] REVIEWER price check: {pv.get('note', '')}")
+            state["review"] = review
+            score = review["score"]
+        except Exception as _pv_err:
+            print(f"[CODE-LEVEL] Price verification error (ignored): {_pv_err}")
+
     # Max iterations — but if STILL over budget on last iteration,
     # we flag it so finalizer can handle it
     if state["iteration"] >= state["max_iterations"]:
@@ -3981,6 +4387,10 @@ def should_revise(state: GraphState) -> Literal["revise", "finalize"]:
 
     # If underutilized, force revision (we have iterations left)
     if is_underutilized:
+        return "revise"
+
+    # If the recommended hotel's price disagrees with live search, revise with the real figure
+    if price_mismatch:
         return "revise"
 
     budget = review.get("budget_check", {})
