@@ -1874,17 +1874,19 @@ def _build_budget_section(transport, hotel, activities, num_nights, user_budget,
     rem_str = _fmt_money(remaining, currency)
     if remaining < 0:
         rem_str = "-" + _fmt_money(abs(remaining), currency)
+    nights = max(int(num_nights or 1), 1)
+    night = hotel / nights
     lines = [
-        "## 💰 الميزانية",
+        "## 💰 الميزانية الإجمالية",
         "",
-        "| البند | التكلفة |",
-        "|---|---|",
-        f"| النقل (كل المسافرين) | {_fmt_money(transport, currency)} |",
-        f"| الفندق ({num_nights} ليالٍ) | {_fmt_money(hotel, currency)} |",
-        f"| الأنشطة والتجارب | {_fmt_money(activities, currency)} |",
-        f"| **الإجمالي الكلي** | **{_fmt_money(total, currency)}** |",
-        f"| الميزانية المتاحة | {_fmt_money(user_budget, currency)} |",
-        f"| الميزانية المتبقية | {rem_str} |",
+        "| البند | التكلفة | التفاصيل |",
+        "|---|---|---|",
+        f"| النقل (كل المسافرين) | {_fmt_money(transport, currency)} | — |",
+        f"| الإقامة ({nights} ليالٍ) | {_fmt_money(hotel, currency)} | {_fmt_money(night, currency)} × {nights} |",
+        f"| الأنشطة والتجارب | {_fmt_money(activities, currency)} | — |",
+        f"| **الإجمالي الكلي** | **{_fmt_money(total, currency)}** | — |",
+        f"| الميزانية المتاحة | {_fmt_money(user_budget, currency)} | — |",
+        f"| الميزانية المتبقية | {rem_str} | — |",
         "",
         note,
     ]
@@ -2124,9 +2126,10 @@ def _tavily_text(res) -> str:
     return str(res or "")
 
 
-def _parse_night_prices_usd(text: str):
-    """Pull per-night-looking prices out of search text and normalise each to USD, using the
-    currency symbol/word next to the number. Returns a list of USD floats in a sane nightly range."""
+def _parse_night_prices_usd(text: str, lo_usd: float = 20, hi_usd: float = 3000):
+    """Pull price-looking numbers out of search text and normalise each to USD, using the
+    currency symbol/word next to the number. Returns a list of USD floats within [lo_usd, hi_usd]
+    (defaults suit a nightly hotel rate; widen the bounds for round-trip flights)."""
     if not text:
         return []
     low = text.lower()
@@ -2141,7 +2144,7 @@ def _parse_night_prices_usd(text: str):
         if not fx:
             return
         usd = amt / fx
-        if 20 <= usd <= 3000:            # a plausible nightly rate in USD
+        if lo_usd <= usd <= hi_usd:
             out.append(usd)
 
     # symbol BEFORE the number:  $120 / US$120 / €95 / £80
@@ -2334,6 +2337,74 @@ def _verify_recommended_hotel_price(draft: str, destination: str, currency: str,
     return out
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# REAL FLIGHT PRICE FROM LIVE SEARCH — same idea as the hotel price, for the
+# round-trip flight. The deterministic route table is a realistic FLOOR; live
+# search can only RAISE the per-person fare toward reality (never lower it — a
+# 'from $X' hit is often a one-way/promo, so a downward move would mislead).
+# Free (Tavily). Cached per route. Returns the price in the trip currency, or None.
+# ═══════════════════════════════════════════════════════════════════════
+
+_FLIGHT_PRICE_CACHE = {}
+
+
+def _trip_origin(question: str) -> str:
+    """Best-effort origin city for the flight. Defaults to Cairo (this app's usual origin)."""
+    try:
+        m = re.search(r'from\s+([A-Za-z؀-ۿ ]{3,30}?)\s+to\s+', question or '', re.IGNORECASE)
+        if m:
+            return m.group(1).strip()
+        m2 = re.search(r'من\s+([؀-ۿ ]{3,30}?)\s+(?:إلى|الى|ل)\s', question or '')
+        if m2:
+            return m2.group(1).strip()
+    except Exception:
+        pass
+    return "Cairo"
+
+
+def _real_flight_roundtrip_price(origin: str, destination: str, currency: str):
+    """Live round-trip ECONOMY price PER PERSON for origin→destination, in the trip currency,
+    via Tavily search. Pools several query variants, trims outliers, returns the median. Cached.
+    Returns None when search finds no price (caller then keeps the deterministic route price)."""
+    try:
+        fx = _USD_FX.get((currency or '$').strip())
+        if not fx:
+            return None
+        o = (origin or 'Cairo').split(',')[0].strip()
+        d = (destination or '').split(',')[0].strip()
+        if not d:
+            return None
+        ckey = (o.lower(), d.lower(), (currency or '$').strip())
+        if ckey in _FLIGHT_PRICE_CACHE:
+            return _FLIGHT_PRICE_CACHE[ckey]
+        queries = [
+            f"{o} to {d} round trip flight price economy",
+            f"flight ticket {o} to {d} price round trip",
+            f"رحلة طيران {o} {d} ذهاب وعودة سعر التذكرة",
+        ]
+        pooled = []
+        for q in queries:
+            try:
+                pooled += _parse_night_prices_usd(_tavily_text(search_tool.invoke(q.strip())), 40, 6000)
+            except Exception:
+                continue
+            if len(pooled) >= 6:
+                break
+        if not pooled:
+            _FLIGHT_PRICE_CACHE[ckey] = None
+            return None
+        pooled.sort()
+        median_usd = pooled[len(pooled) // 2]
+        core = [p for p in pooled if 0.5 * median_usd <= p <= 2.5 * median_usd] or pooled
+        core.sort()
+        typical_usd = core[len(core) // 2]
+        val = typical_usd * fx
+        _FLIGHT_PRICE_CACHE[ckey] = val
+        return val
+    except Exception:
+        return None
+
+
 def _budget_hotel_line_value(draft: str):
     """Best-effort amount shown on the hotel/accommodation line of the budget table.
     Returns None when unsure."""
@@ -2400,29 +2471,68 @@ def _extract_transport_total(draft: str, flight_notes, num_travelers):
     return None
 
 
+def _extract_activity_costs(draft: str):
+    """Extract the per-activity GROUP costs from the activities section of the plan.
+    Returns (costs: list[float], detail: str) where detail is 'a + b + c …'. Empty when the
+    section or costs can't be found — so the caller can fall back to the plain total."""
+    try:
+        if not draft:
+            return [], ""
+        m = re.search(r'(?:^|\n)[ \t]*#{1,4}[^\n]*(?:الأنشطة|التجارب|Activities|Experiences)[^\n]*',
+                      draft, re.IGNORECASE)
+        if not m:
+            return [], ""
+        rest = draft[m.end():]
+        nxt = re.search(r'\n[ \t]*#{1,4}[ \t]+\S', rest)
+        section = rest[:nxt.start()] if nxt else rest
+        costs = []
+        for cm in re.finditer(
+                r'(?:التكلفة|السعر|Cost|Price)[:\s]*([\d][\d,]{1,7}(?:\.\d+)?)\s*'
+                r'(?:ج\.م|EGP|\$|€|£|AED|د\.إ|SAR|ر\.س)', section, re.IGNORECASE):
+            try:
+                v = float(cm.group(1).replace(',', ''))
+                if v >= 50:
+                    costs.append(v)
+            except ValueError:
+                pass
+        if not costs:
+            return [], ""
+        detail = " + ".join(f"{int(round(c)):,}" for c in costs)
+        return costs, detail
+    except Exception:
+        return [], ""
+
+
 def _build_authoritative_budget(transport, hotel, activities, food, num_nights,
-                                user_budget, currency) -> str:
-    """Build the budget section with the math done in code. Single source of truth."""
+                                user_budget, currency, num_travelers=1,
+                                activities_detail="") -> str:
+    """Build the ONE budget section with the math done in code — single source of truth.
+    Includes a التفاصيل (breakdown) column so it reads as the detailed budget."""
     total = transport + hotel + activities + food
     remaining = user_budget - total
     rem = _fmt_money(remaining, currency) if remaining >= 0 else "-" + _fmt_money(abs(remaining), currency)
+    nights = max(int(num_nights or 1), 1)
+    trav = max(int(num_travelers or 1), 1)
+    night = hotel / nights
+    pp = transport / trav
+    act_detail = activities_detail if activities_detail else "—"
     rows = [
-        "## 💰 الميزانية",
+        "## 💰 الميزانية الإجمالية",
         "",
-        "| البند | التكلفة |",
-        "|---|---|",
-        f"| النقل (كل المسافرين) | {_fmt_money(transport, currency)} |",
-        f"| الإقامة ({num_nights} ليالٍ) | {_fmt_money(hotel, currency)} |",
-        f"| الأنشطة والتجارب | {_fmt_money(activities, currency)} |",
+        "| البند | التكلفة | التفاصيل |",
+        "|---|---|---|",
+        f"| النقل (كل المسافرين) | {_fmt_money(transport, currency)} | {_fmt_money(pp, currency)} × {trav} |",
+        f"| الإقامة ({nights} ليالٍ) | {_fmt_money(hotel, currency)} | {_fmt_money(night, currency)} × {nights} |",
+        f"| الأنشطة والتجارب | {_fmt_money(activities, currency)} | {act_detail} |",
     ]
     if food and food > 0:
-        rows.append(f"| الطعام (مطاعم خارجية) | {_fmt_money(food, currency)} |")
+        rows.append(f"| الطعام (مطاعم خارجية) | {_fmt_money(food, currency)} | — |")
     else:
-        rows.append("| الطعام | 0 (مشمول في الفندق) |")
+        rows.append("| الطعام | 0 | مشمول في الفندق |")
     rows += [
-        f"| **الإجمالي الكلي** | **{_fmt_money(total, currency)}** |",
-        f"| الميزانية المتاحة | {_fmt_money(user_budget, currency)} |",
-        f"| الميزانية المتبقية | {rem} |",
+        f"| **الإجمالي الكلي** | **{_fmt_money(total, currency)}** | — |",
+        f"| الميزانية المتاحة | {_fmt_money(user_budget, currency)} | — |",
+        f"| الميزانية المتبقية | {rem} | — |",
     ]
     return "\n".join(rows)
 
@@ -2477,6 +2587,15 @@ def _rebuild_budget_deterministic(draft, user_budget, num_nights, num_travelers,
         night_price = _recommended_hotel_night_price(draft, hotel_notes, travel_style)
         transport = transport_override if transport_override else _extract_transport_total(draft, flight_notes, num_travelers)
         activities = _extract_budget_amount(draft, ['الأنشطة والتجارب', 'الأنشطة', 'التجارب', 'Activities']) or 0
+        # Activities breakdown FROM THE ITINERARY — show each activity's cost in the التفاصيل
+        # column AND recompute the total from the real sum, so the breakdown can never disagree
+        # with the figure (fixes the '14,400 shown but parts add to 12,600' LLM inconsistency).
+        _act_costs, _act_detail = _extract_activity_costs(draft)
+        _act_sum = sum(_act_costs)
+        if _act_costs and (not activities or 0.5 * activities <= _act_sum <= 1.6 * activities):
+            activities = _act_sum
+        else:
+            _act_detail = ""   # can't show a trustworthy breakdown → keep the plain total
         # Food is computed FROM THE ITINERARY (the real paid meals), not trusted from the
         # LLM's budget row — that's what was lying ("0 / included" while restaurants were scheduled).
         food_itin, has_meals = _compute_food_from_itinerary(draft, num_travelers)
@@ -2490,7 +2609,8 @@ def _rebuild_budget_deterministic(draft, user_budget, num_nights, num_travelers,
             # handled elsewhere. Don't force an over-budget display here.
             return draft, False, f"authoritative total {int(total):,} over budget {int(user_budget):,}"
         new_section = _build_authoritative_budget(transport, hotel, activities, food,
-                                                  nights, user_budget, currency)
+                                                  nights, user_budget, currency, num_travelers,
+                                                  activities_detail=_act_detail)
         new_draft = _replace_budget_section(draft, new_section)
         reason = (f"transport={int(transport):,}, hotel={int(night_price):,}×{nights}={int(hotel):,}, "
                   f"activities={int(activities):,}, food={int(food):,}, total={int(total):,}, "
@@ -2787,6 +2907,10 @@ def _build_transport_section(info, currency) -> str:
     pp = _fmt_money(info["per_person"], currency)
     tot = _fmt_money(info["total"], currency)
     is_egp = ('ج.م' in (currency or '') or 'EGP' in (currency or '').upper())
+    badge_ar = (f"\n> 🔎 تم التحقق من سعر الطيران مقابل بحث مباشر (~{pp}/فرد ذهاب وعودة) "
+                "— flight price verified against live search." if info.get("_price_verified") else "")
+    badge_en = (f"\n> 🔎 Flight price verified against live search (~{pp}/person round trip)."
+                if info.get("_price_verified") else "")
     if is_egp:
         return "\n".join([
             "## ✈️ النقل",
@@ -2795,7 +2919,7 @@ def _build_transport_section(info, currency) -> str:
             "|---|---|---|---|---|",
             f"| {info['mode']} | {info['hours']} | {pp} | {pp} × {info['trav']} = {tot} | {info['note']} |",
             "",
-            f"🏆 توصية الـAI: {info['mode']} — {info['reason']}.",
+            f"🏆 توصية الـAI: {info['mode']} — {info['reason']}." + badge_ar,
         ])
     # non-EGP (English-leaning) draft → English headers
     return "\n".join([
@@ -2805,7 +2929,7 @@ def _build_transport_section(info, currency) -> str:
         "|---|---|---|---|---|",
         f"| {info['mode']} | {info['hours']} | {pp} | {pp} × {info['trav']} = {tot} | {info['note']} |",
         "",
-        f"🏆 AI Recommendation: {info['mode']} — {info['reason']}.",
+        f"🏆 AI Recommendation: {info['mode']} — {info['reason']}." + badge_en,
     ])
 
 
@@ -3014,28 +3138,46 @@ def _force_budget_fit(resp: str, flight_notes, hotel_notes, user_budget, num_nig
     return _replace_budget_section(resp, new_section), "ok"
 
 
-def _replace_budget_section(resp: str, new_section: str) -> str:
-    """Replace the existing budget section (from the 💰 header to the next top-level
-    section header, or end of text) with the rebuilt one. Appends if no header is found."""
-    # Find the budget header: a line containing 💰, or an Arabic/English 'الميزانية'/'Budget' heading.
-    header_re = re.compile(r'(^|\n)\s*#{0,3}\s*💰[^\n]*', re.IGNORECASE)
-    m = header_re.search(resp)
-    if not m:
-        header_re2 = re.compile(r'(^|\n)#{1,4}\s*(?:الميزانية|Budget)\b[^\n]*', re.IGNORECASE)
-        m = header_re2.search(resp)
-    if not m:
-        # No recognizable budget section — append the authoritative one.
-        return resp.rstrip() + "\n\n" + new_section + "\n"
+def _is_budget_heading(header_text: str) -> bool:
+    """True when a markdown header line is the budget SUMMARY heading (not a daily/other one)."""
+    if '💰' in header_text:
+        return True
+    t = re.sub(r'[#*_`💰🧾]', '', header_text).strip()
+    if re.search(r'يومي|daily', t, re.IGNORECASE):     # 'الميزانية اليومية' is NOT the summary
+        return False
+    return bool(re.match(r'^(?:ميزانية|الميزانية)(?:\s+(?:الإجمالية|الكلية|الكاملة|التفصيلية))?\s*$', t)) \
+        or bool(re.match(r'^(?:total\s+|overall\s+)?budget(?:\s+breakdown)?\s*$', t, re.IGNORECASE))
 
-    start = m.start() if m.start() == 0 else m.start() + 1  # keep the leading newline out of slice
-    # Find the next section header AFTER this one to know where the budget section ends.
-    rest = resp[m.end():]
-    next_hdr = re.search(r'\n\s*#{1,4}\s+\S|\n\s*(?:🆘|📞|🏥|🧳|🎒|⚠️ تنبيه)', rest)
-    if next_hdr:
-        end = m.end() + next_hdr.start()
-    else:
-        end = len(resp)
-    return resp[:start].rstrip() + "\n\n" + new_section + "\n\n" + resp[end:].lstrip()
+
+def _replace_budget_section(resp: str, new_section: str) -> str:
+    """Keep EXACTLY ONE budget section. Replace the FIRST budget section with the rebuilt
+    (authoritative) one, and DELETE every other budget section so the page never shows the
+    budget twice. Appends the authoritative section if none exists."""
+    hdr_re = re.compile(r'(?:\A|\n)([ \t]*#{1,4}[ \t]*[^\n]*)')
+    spans = []                       # (start, end) of each budget section
+    for m in hdr_re.finditer(resp):
+        if not _is_budget_heading(m.group(1)):
+            continue
+        start = m.start()
+        if resp[start] == '\n':
+            start += 1
+        rest = resp[m.end():]
+        nxt = re.search(r'\n[ \t]*#{1,4}[ \t]+\S|\n[ \t]*(?:🆘|📞|🏥|🧳|🎒|⚠️)', rest)
+        end = m.end() + nxt.start() if nxt else len(resp)
+        spans.append((start, end))
+    if not spans:
+        return (resp.rstrip() + "\n\n" + new_section + "\n")
+    spans.sort()
+    out, cursor = [], 0
+    for idx, (s, e) in enumerate(spans):
+        out.append(resp[cursor:s])
+        if idx == 0:                 # first budget → replace with the authoritative one
+            out.append(new_section.strip() + "\n")
+        # every later budget section is dropped
+        cursor = e
+    out.append(resp[cursor:])
+    result = "".join(out)
+    return re.sub(r'\n{3,}', '\n\n', result).strip() + "\n"
 
 
 # ─────────────────────────────────────────────
@@ -4083,6 +4225,27 @@ Draft to fix:
             _dest = (state.get('plan') or {}).get('destination', '')
             t_info = _compute_transport(state.get('question', ''), _dest,
                                         num_travelers, travel_style, cur_sym)
+            # LIVE FLIGHT-PRICE VERIFICATION — refine the route table's per-person fare with the
+            # real round-trip price from live search. It can only RAISE the fare toward reality
+            # (a 'from $X' hit is often one-way/promo, so never lower it below the realistic
+            # table floor). Keeps per-person × travelers exact. Badge shown in the section.
+            if t_info:
+                try:
+                    _live_pp = _real_flight_roundtrip_price(
+                        _trip_origin(state.get('question', '')), _dest, cur_sym)
+                    _anchor = t_info.get("per_person") or 0
+                    if _live_pp and _anchor:
+                        _refined = min(max(_live_pp, _anchor * 0.85), _anchor * 2.2)
+                        if _refined > _anchor * 1.08:          # reality is meaningfully higher
+                            _trav = t_info.get("trav") or max(int(num_travelers or 1), 1)
+                            t_info = dict(t_info)
+                            t_info["per_person"] = int(round(_refined))
+                            t_info["total"] = int(round(_refined * _trav))
+                            t_info["_price_verified"] = True
+                            print(f"[CODE-LEVEL] Flight price verified from live search: "
+                                  f"{t_info['per_person']:,}/person (was {int(_anchor):,})")
+                except Exception as _fp_err:
+                    print(f"[CODE-LEVEL] Live flight price error (ignored): {_fp_err}")
             override = t_info["total"] if t_info else None
             resp_bud, bud_applied, bud_reason = _rebuild_budget_deterministic(
                 resp, user_budget, num_nights, num_travelers, cur_sym, travel_style,
@@ -4181,24 +4344,10 @@ Draft to fix:
     except Exception as _struct_err:
         print(f"[CODE-LEVEL] Structure-guarantee pass error (ignored): {_struct_err}")
 
-    # ══════════════════════════════════════════════════════════════
-    # REVIEWER NOTE (user-visible) — show that the recommended hotel's price was
-    # checked against live web search. Only shown when search returned a real
-    # figure, so it's evidence, never noise.
-    # ══════════════════════════════════════════════════════════════
-    try:
-        _pc = (state.get("review") or {}).get("price_check") or {}
-        _pc_note = _pc.get("note")
-        if _pc_note and _pc.get("real") is not None:
-            _note_line = f"\n> 🔎 **تحقّق المراجع من السعر:** {_pc_note}\n"
-            _mbud = re.search(r'\n\s*#{0,6}\s*💰', resp)
-            if _mbud:
-                resp = resp[:_mbud.start()] + _note_line + resp[_mbud.start():]
-            else:
-                resp = resp.rstrip() + "\n" + _note_line
-            print("[CODE-LEVEL] Reviewer price-verification note added to output")
-    except Exception as _note_err:
-        print(f"[CODE-LEVEL] Reviewer note error (ignored): {_note_err}")
+    # NOTE: the hotel price verification is already shown ONCE, as the badge under the
+    # recommended hotel (see _apply_real_recommended_price). We deliberately do NOT add a
+    # second reviewer note near the budget — that was redundant clutter. The price check still
+    # runs in the review loop (back-end); it just isn't printed twice on the page.
 
     # ══════════════════════════════════════════════════════════════
     # CURRENCY NORMALIZATION — HARD GUARANTEE: force the whole output into the
