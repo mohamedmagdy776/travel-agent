@@ -2049,10 +2049,16 @@ def _hotel_band(destination: str, stars: int, currency: str):
 
 
 def _clamp_hotel_prices_in_draft(draft: str, destination: str, currency: str):
-    """Clamp every hotel-table nightly price into its realistic band for the destination &
-    star tier. Returns (new_draft, changed). Deterministic — stops hotel-price hallucination."""
+    """Clamp every NON-recommended hotel-table nightly price into its realistic band for the
+    destination & star tier. The 🏆-recommended hotel is SKIPPED — its price is governed by the
+    live search in _apply_real_recommended_price, which may legitimately exceed the city band
+    (iconic luxury). Returns (new_draft, changed). Deterministic — stops hotel-price hallucination."""
     if not draft:
         return draft, False
+    # the recommended hotel's name (its row must NOT be clamped — live search owns it)
+    _mrec = re.search(r'🏆[^\n:]*:\s*([^\n—\-–|]{3,80})', draft)
+    _rec_name = _mrec.group(1).strip() if _mrec else ''
+    _rec_tokens = set(re.findall(r'[\w؀-ۿ]{2,}', _rec_name))
     price_re = re.compile(
         r'([\d][\d,]{2,}(?:\.\d+)?)\s*(?:ج\.م|EGP|AED|د\.إ|SAR|ر\.س|EUR|€|£|USD|\$)'
         r'|(?:\$|€|£)\s*([\d][\d,]{2,}(?:\.\d+)?)')
@@ -2065,6 +2071,11 @@ def _clamp_hotel_prices_in_draft(draft: str, destination: str, currency: str):
         joined = ' '.join(cells).lower()
         if ('الفندق' in joined and ('السعر' in joined or 'النجوم' in joined)) or 'hotel name' in joined \
            or set(''.join(cells)) <= set('-: *'):
+            out.append(line); continue
+        # skip the recommended hotel's own row (its real/verified price must survive)
+        _name_cell = cells[0] if cells else ''
+        if _rec_name and _name_cell and (_name_cell in _rec_name or _rec_name in _name_cell
+                or len(_rec_tokens & set(re.findall(r'[\w؀-ۿ]{2,}', _name_cell))) >= 1):
             out.append(line); continue
         pm = price_re.search(line)
         if not pm:
@@ -2253,20 +2264,26 @@ def _apply_real_recommended_price(draft: str, destination: str, currency: str):
             real = _real_hotel_night_price(name_cell, destination, currency)
             stars = line.count('⭐') + line.count('★') or 4
             band = _hotel_band(destination, stars, currency)
-            if real:
-                # Live price found → trust it; the band only guards against freak extremes.
-                new_price = min(max(real, band[0]), band[1]) if band else real
+            # Wide ABSOLUTE sanity bounds in the trip currency — only reject an absurd parse
+            # (e.g. a total-stay or wrong-currency figure), NEVER a legitimate luxury rate.
+            fx = _USD_FX.get((currency or '$').strip(), 1.0)
+            abs_lo, abs_hi = 6 * fx, 15000 * fx          # ~$6 .. ~$15,000 per night
+            if real and abs_lo <= real <= abs_hi:
+                # TRUST the live price. An iconic/luxury hotel legitimately costs many times the
+                # city's normal rate (e.g. Sofitel Old Cataract ~55,000, not the 12,000 band cap),
+                # so we do NOT clamp a real searched price down to the city band. 'verified' here
+                # is HONEST — it's the figure the search returned.
+                new_price = real
                 badge = (f"> 🔎 تم التحقق من سعر الفندق مقابل بحث مباشر "
                          f"(~{int(round(new_price)):,} {currency}/ليلة) — price verified against live search.")
             elif band:
-                # Search miss → DON'T keep the LLM's possible lowball. Lift to a realistic
-                # typical price (band midpoint) for this star tier & city, so the headline
-                # hotel is never shown far below reality (the '4,800 for an 8,000 resort' bug).
+                # No trustworthy live price → correct the LLM's number toward a realistic estimate
+                # (band midpoint). Labeled ESTIMATE, never 'verified', so the badge never lies.
                 lo, hi = band
                 realistic = lo + 0.5 * (hi - lo)
                 new_price = min(max(old, realistic), hi)
                 badge = ("> 🔎 تقدير واقعي للسعر (البحث المباشر لم يرجّع سعرًا مؤكدًا لهذا الفندق) "
-                         "— realistic market estimate.")
+                         "— realistic market estimate (not live-verified).")
             else:
                 return draft, False
             # rewrite the shown price only when it is materially different from the real/estimate
@@ -3022,6 +3039,23 @@ def _replace_section(draft, header_keywords, new_section) -> str:
     nxt = re.search(r'\n[ \t]*#{1,4}[ \t]+\S', rest)
     end = (m.end() + nxt.start()) if nxt else len(draft)
     return draft[:start].rstrip() + "\n\n" + new_section + "\n\n" + draft[end:].lstrip()
+
+
+def _ensure_transport_section(resp: str, new_section: str) -> str:
+    """GUARANTEE a transport section exists: replace it if present, otherwise INSERT it (before
+    the budget / visa section, else append). Stops the 'transport section completely missing' bug
+    for destinations where the LLM forgot to write one."""
+    kw = ["وسائل النقل", "النقل", "المواصلات", "Transport", "Flights"]
+    replaced = _replace_section(resp, kw, new_section)
+    if replaced != resp:
+        return replaced                      # a transport section existed → replaced in place
+    # none existed → insert before the budget/visa section (its natural spot), else append
+    m = re.search(r'(?:^|\n)[ \t]*#{1,4}[^\n]*(?:💰|الميزانية|Budget|🛂|التأشيرة|Visa|🎯|الأنشطة)',
+                  resp, re.IGNORECASE)
+    if m:
+        pos = m.start() if m.start() == 0 else m.start() + 1
+        return resp[:pos].rstrip() + "\n\n" + new_section + "\n\n" + resp[pos:].lstrip()
+    return resp.rstrip() + "\n\n" + new_section + "\n"
 
 
 def _force_budget_fit(resp: str, flight_notes, hotel_notes, user_budget, num_nights,
@@ -4261,10 +4295,8 @@ Draft to fix:
             # construction (per-person × travelers = total). This is what stops the transport
             # table from ever showing inconsistent numbers when the budget rebuild is skipped.
             if t_info:
-                resp = _replace_section(
-                    resp, ["وسائل النقل", "النقل", "المواصلات", "Transport", "Flights"],
-                    _build_transport_section(t_info, cur_sym))
-                print(f"[CODE-LEVEL] Deterministic transport applied: {t_info['mode']} "
+                resp = _ensure_transport_section(resp, _build_transport_section(t_info, cur_sym))
+                print(f"[CODE-LEVEL] Deterministic transport ensured: {t_info['mode']} "
                       f"(total={t_info['total']:,})")
     except Exception as _tb_err:
         print(f"[CODE-LEVEL] Deterministic transport/budget error (ignored): {_tb_err}")
