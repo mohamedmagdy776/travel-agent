@@ -14,6 +14,8 @@ Requirements:
 Setup:
     - OPENAI_API_KEY
     - TAVILY_API_KEY  (free at tavily.com)
+    - SERPER_API_KEY  (optional, free at serper.dev — structured Google prices for hotels/flights;
+                       when set it is PREFERRED over Tavily for live price accuracy)
     - LANGSMITH_API_KEY  (optional)
     - LANGCHAIN_TRACING_V2=true  (optional)
     - LANGCHAIN_PROJECT=travel-agent  (optional)
@@ -44,6 +46,60 @@ except ImportError:
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
 search_tool = TavilySearchResults(max_results=5)
 tools = [search_tool]
+
+# Serper (structured Google Search) — the PREFERRED live-price source. Its organic snippets and
+# knowledge graph carry Google's own hotel/flight prices (the exact 'EGP 55,647' box), which is
+# far more reliable than parsing scraped page text. Read from the environment ONLY — never hard
+# code the key, never commit it. When SERPER_API_KEY is unset, we fall back to Tavily automatically.
+SERPER_API_KEY = os.getenv("SERPER_API_KEY", "").strip()
+try:
+    import requests as _requests
+except ImportError:
+    _requests = None
+
+
+def _serper_search_text(query: str, gl: str = "eg", hl: str = "en") -> str:
+    """Return a text blob of Google results for `query` via Serper (knowledge graph + answer box +
+    organic snippets). Empty string when Serper isn't configured, isn't reachable, or returns
+    nothing — so callers transparently fall back to Tavily."""
+    if not SERPER_API_KEY or not query or _requests is None:
+        return ""
+    try:
+        resp = _requests.post(
+            "https://google.serper.dev/search",
+            headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
+            json={"q": query, "gl": gl, "hl": hl, "num": 10}, timeout=12)
+        if resp.status_code != 200:
+            return ""
+        d = resp.json()
+        parts = []
+        kg = d.get("knowledgeGraph") or {}
+        if kg:
+            parts.append(f"{kg.get('title', '')} {kg.get('type', '')} {kg.get('description', '')}")
+            for k, v in (kg.get("attributes") or {}).items():
+                parts.append(f"{k}: {v}")
+        ab = d.get("answerBox") or {}
+        if ab:
+            parts.append(f"{ab.get('title', '')} {ab.get('snippet', '')} {ab.get('answer', '')}")
+        for o in (d.get("organic") or [])[:10]:
+            parts.append(f"{o.get('title', '')} {o.get('snippet', '')}")
+        for p in (d.get("places") or [])[:5]:
+            parts.append(f"{p.get('title', '')} {p.get('priceLevel', '')} {p.get('description', '')}")
+        return "  ".join(x for x in parts if x and x.strip())
+    except Exception:
+        return ""
+
+
+def _price_search_text(query: str) -> str:
+    """Google results text for a price query — Serper first (structured, accurate), Tavily as
+    the free fallback. One place so both hotel and flight price lookups share the same source."""
+    txt = _serper_search_text(query)
+    if txt and len(txt) > 20:
+        return txt
+    try:
+        return _tavily_text(search_tool.invoke(query))
+    except Exception:
+        return ""
 
 
 # ─────────────────────────────────────────────
@@ -2170,6 +2226,15 @@ def _parse_night_prices_usd(text: str, lo_usd: float = 20, hi_usd: float = 3000)
         sym = _CCY_WORD_TO_SYM.get(tok)
         if sym:
             _add(m.group(1), sym)
+    # currency CODE/WORD BEFORE the number:  EGP 55,647 / USD 120 / SAR 500 / جنيه 6,500
+    # (this is how Google/Serper usually prints hotel prices — must be caught too)
+    for m in re.finditer(
+        r'(egyptian pounds?|us\$|usd|egp|eur|euros?|gbp|sar|aed|dollars?|pounds?|riyals?|dirhams?|جنيه|ج\.م|ر\.س|د\.إ)'
+        r'\s*([\d][\d,]{1,7}(?:\.\d{1,2})?)',
+        low):
+        sym = _CCY_WORD_TO_SYM.get(m.group(1).strip())
+        if sym:
+            _add(m.group(2), sym)
     return out
 
 
@@ -2200,7 +2265,7 @@ def _real_hotel_night_price(hotel_name: str, destination: str, currency: str):
         pooled = []
         for q in queries:
             try:
-                pooled += _parse_night_prices_usd(_tavily_text(search_tool.invoke(q.strip())))
+                pooled += _parse_night_prices_usd(_price_search_text(q.strip()))
             except Exception:
                 continue
             if len(pooled) >= 6:         # enough signal — stop searching early
@@ -2402,7 +2467,7 @@ def _real_flight_roundtrip_price(origin: str, destination: str, currency: str):
         pooled = []
         for q in queries:
             try:
-                pooled += _parse_night_prices_usd(_tavily_text(search_tool.invoke(q.strip())), 40, 6000)
+                pooled += _parse_night_prices_usd(_price_search_text(q.strip()), 40, 6000)
             except Exception:
                 continue
             if len(pooled) >= 6:
