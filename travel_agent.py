@@ -1950,34 +1950,78 @@ def _build_budget_section(transport, hotel, activities, num_nights, user_budget,
 
 
 def _parse_hotel_table_rows(draft: str):
-    """Parse the hotel comparison table into [(name, price_per_night), …] from the draft.
-    Reads the actual table rows, skipping header/separator rows and the rating/stars columns.
-    This is the STRICT source of truth for hotel prices — never guessed."""
-    rows = []
+    """Parse the HOTEL comparison table into [(name, price_per_night), …]. Strictly scoped to the
+    hotel table: only rows between the hotel header and the next non-table line are read, so the
+    TRANSPORT and ACTIVITIES tables are never parsed as hotels (that bug made a flight row like
+    'طيران أير كايرو / 6,610' look like the recommended hotel). This is the STRICT source of truth."""
     price_re = re.compile(
         r'([\d][\d,]{2,}(?:\.\d+)?)\s*(?:ج\.م|EGP|AED|د\.إ|SAR|ر\.س|EUR|€|£|USD|\$)'
         r'|(?:\$|€|£)\s*([\d][\d,]{2,}(?:\.\d+)?)')
-    for line in draft.splitlines():
-        if line.count('|') < 3:                       # need a real table row
-            continue
-        cells = [c.strip() for c in line.strip().strip('|').split('|')]
-        joined = ' '.join(cells).lower()
-        if ('الفندق' in joined and ('السعر' in joined or 'النجوم' in joined)) or 'hotel name' in joined:
-            continue                                  # header row
-        if set(''.join(cells)) <= set('-: *'):        # markdown separator row
-            continue
-        price = None
+
+    def _row_price(cells):
         for c in cells:
             pm = price_re.search(c)
             if pm:
                 try:
-                    price = float((pm.group(1) or pm.group(2)).replace(',', ''))
-                    break
+                    return float((pm.group(1) or pm.group(2)).replace(',', ''))
                 except ValueError:
                     pass
+        return None
+
+    lines = draft.splitlines()
+    rows = []
+    in_hotel_table = False
+    for line in lines:
+        if line.count('|') < 3:                       # a non-table line ends the current table
+            in_hotel_table = False
+            continue
+        cells = [c.strip() for c in line.strip().strip('|').split('|')]
+        joined = ' '.join(cells).lower()
+        if ('الفندق' in joined and ('السعر' in joined or 'النجوم' in joined)) \
+           or ('hotel' in joined and ('price' in joined or 'star' in joined or 'name' in joined)):
+            in_hotel_table = True                     # entering the hotel table
+            continue
+        if set(''.join(cells)) <= set('-: *'):        # markdown separator row
+            continue
+        if not in_hotel_table:                        # a row belonging to some OTHER table
+            continue
+        price = _row_price(cells)
         if price and 300 <= price <= 100000 and cells and cells[0]:
             rows.append((cells[0], price))
+
+    if not rows:
+        # fallback: no recognizable hotel header — accept only rows that show a STAR rating
+        # (hotel rows have ⭐/★; transport & activity rows do not), so we still never grab a flight.
+        for line in lines:
+            if line.count('|') < 3 or ('⭐' not in line and '★' not in line):
+                continue
+            cells = [c.strip() for c in line.strip().strip('|').split('|')]
+            price = _row_price(cells)
+            if price and 300 <= price <= 100000 and cells and cells[0]:
+                rows.append((cells[0], price))
     return rows
+
+
+def _recommended_hotel_name(draft: str):
+    """The 🏆-recommended HOTEL name — specifically the 🏆 line whose name matches a HOTEL-TABLE
+    row. CRITICAL: the transport section has its OWN 🏆 and usually appears BEFORE the hotels, so a
+    plain 'first 🏆' match grabs the flight recommendation by mistake (that was the bug where the
+    hotel badge showed the flight price). Returns None when no 🏆 matches a hotel row."""
+    try:
+        rows = _parse_hotel_table_rows(draft)
+        if not rows:
+            return None
+        row_names = [rn for rn, _ in rows if rn]
+        for m in re.finditer(r'🏆[^\n:]*:\s*([^\n—\-–|]{3,80})', draft):
+            name = m.group(1).strip()
+            nt = set(re.findall(r'[\w؀-ۿ]{2,}', name))
+            for rn in row_names:
+                if rn in name or name in rn \
+                   or len(nt & set(re.findall(r'[\w؀-ۿ]{2,}', rn))) >= 1:
+                    return name
+        return None
+    except Exception:
+        return None
 
 
 def _recommended_hotel_night_price(draft: str, hotel_notes, travel_style: str):
@@ -1988,10 +2032,10 @@ def _recommended_hotel_night_price(draft: str, hotel_notes, travel_style: str):
     try:
         rows = _parse_hotel_table_rows(draft)
         if rows:
-            # 1) match the 🏆-recommended hotel name to a table row
-            mrec = re.search(r'🏆[^\n:]*:\s*([^\n—\-–|]{3,80})', draft)
-            if mrec:
-                name = mrec.group(1).strip()
+            # 1) match the 🏆-recommended hotel name to a table row (hotel-scoped, so the
+            #    transport section's own 🏆 is never mistaken for the hotel recommendation)
+            name = _recommended_hotel_name(draft)
+            if name:
                 # exact / substring match first
                 for rname, price in rows:
                     if rname and (rname in name or name in rname):
@@ -2112,8 +2156,7 @@ def _clamp_hotel_prices_in_draft(draft: str, destination: str, currency: str):
     if not draft:
         return draft, False
     # the recommended hotel's name (its row must NOT be clamped — live search owns it)
-    _mrec = re.search(r'🏆[^\n:]*:\s*([^\n—\-–|]{3,80})', draft)
-    _rec_name = _mrec.group(1).strip() if _mrec else ''
+    _rec_name = _recommended_hotel_name(draft) or ''
     _rec_tokens = set(re.findall(r'[\w؀-ۿ]{2,}', _rec_name))
     price_re = re.compile(
         r'([\d][\d,]{2,}(?:\.\d+)?)\s*(?:ج\.م|EGP|AED|د\.إ|SAR|ر\.س|EUR|€|£|USD|\$)'
@@ -2294,10 +2337,9 @@ def _apply_real_recommended_price(draft: str, destination: str, currency: str):
     try:
         if not draft:
             return draft, False
-        mrec = re.search(r'🏆[^\n:]*:\s*([^\n—\-–|]{3,80})', draft)
-        if not mrec:
+        rec_name = _recommended_hotel_name(draft)
+        if not rec_name:
             return draft, False
-        rec_name = mrec.group(1).strip()
         rec_tokens = set(re.findall(r'[\w؀-ۿ]{2,}', rec_name))
         price_re = re.compile(
             r'([\d][\d,]{2,}(?:\.\d+)?)\s*(?:ج\.م|EGP|AED|د\.إ|SAR|ر\.س|EUR|€|£|USD|\$)'
@@ -2383,10 +2425,10 @@ def _verify_recommended_hotel_price(draft: str, destination: str, currency: str,
         if not draft:
             return out
         rows = _parse_hotel_table_rows(draft)
-        mrec = re.search(r'🏆[^\n:]*:\s*([^\n—\-–|]{3,80})', draft)
+        rn0 = _recommended_hotel_name(draft)
         name = displayed = None
-        if mrec and rows:
-            rn = mrec.group(1).strip()
+        if rn0 and rows:
+            rn = rn0
             rt = set(re.findall(r'[\w؀-ۿ]{2,}', rn))
             for rname, price in rows:
                 if rname and (rname in rn or rn in rname
@@ -2560,23 +2602,43 @@ def _extract_activity_costs(draft: str):
     try:
         if not draft:
             return [], ""
-        m = re.search(r'(?:^|\n)[ \t]*#{1,4}[^\n]*(?:الأنشطة|التجارب|Activities|Experiences)[^\n]*',
-                      draft, re.IGNORECASE)
+        # find the activities/experiences section (Arabic OR English). Fall back to the daily
+        # itinerary so English plans that list activities under 'Daily Itinerary' still work.
+        m = re.search(r'(?:^|\n)[ \t]*#{1,4}[^\n]*'
+                      r'(?:الأنشطة|التجارب|Activities|Experiences)[^\n]*', draft, re.IGNORECASE)
+        if not m:
+            m = re.search(r'(?:^|\n)[ \t]*#{1,4}[^\n]*(?:البرنامج|اليومي|Itinerary)[^\n]*',
+                          draft, re.IGNORECASE)
         if not m:
             return [], ""
         rest = draft[m.end():]
-        nxt = re.search(r'\n[ \t]*#{1,4}[ \t]+\S', rest)
+        # stop at the next MAJOR section (budget / weather / visa / emergency), not every sub-day
+        nxt = re.search(r'\n[ \t]*#{1,3}[^\n]*'
+                        r'(?:💰|الميزانية|Budget|الطقس|Weather|التأشيرة|Visa|🆘|طوارئ|Emergency|النقل|Transport)',
+                        rest, re.IGNORECASE)
         section = rest[:nxt.start()] if nxt else rest
         costs = []
-        for cm in re.finditer(
-                r'(?:التكلفة|السعر|Cost|Price)[:\s]*([\d][\d,]{1,7}(?:\.\d+)?)\s*'
-                r'(?:ج\.م|EGP|\$|€|£|AED|د\.إ|SAR|ر\.س)', section, re.IGNORECASE):
+        # the LLM writes a GROUP total per activity ('Total: 300' / 'الإجمالي: 300'); prefer that.
+        # Currency symbol is OPTIONAL — English itineraries often write '150 per person, Total: 300'.
+        for cm in re.finditer(r'(?:Total|الإجمالي|المجموع)[:\s]*'
+                              r'(?:ج\.م|EGP|\$|€|£|AED|SAR)?\s*([\d][\d,]{1,7}(?:\.\d+)?)',
+                              section, re.IGNORECASE):
             try:
                 v = float(cm.group(1).replace(',', ''))
-                if v >= 50:
+                if 50 <= v <= 500000:
                     costs.append(v)
             except ValueError:
                 pass
+        if not costs:
+            for cm in re.finditer(r'(?:التكلفة|السعر|Cost|Price|Entry\s*fee|Fee)[:\s]*'
+                                  r'(?:ج\.م|EGP|\$|€|£|AED|SAR)?\s*([\d][\d,]{1,7}(?:\.\d+)?)',
+                                  section, re.IGNORECASE):
+                try:
+                    v = float(cm.group(1).replace(',', ''))
+                    if 50 <= v <= 500000:
+                        costs.append(v)
+                except ValueError:
+                    pass
         if not costs:
             return [], ""
         detail = " + ".join(f"{int(round(c)):,}" for c in costs)
@@ -2598,6 +2660,26 @@ def _build_authoritative_budget(transport, hotel, activities, food, num_nights,
     night = hotel / nights
     pp = transport / trav
     act_detail = activities_detail if activities_detail else "—"
+    is_egp = ('ج.م' in (currency or '') or 'EGP' in (currency or '').upper())
+    if not is_egp:
+        # English/non-EGP plan → English budget headers (so an English plan isn't half-Arabic)
+        rows = [
+            "## 💰 Budget Breakdown",
+            "",
+            "| Item | Cost | Details |",
+            "|---|---|---|",
+            f"| Transport (all travelers) | {_fmt_money(transport, currency)} | {_fmt_money(pp, currency)} × {trav} |",
+            f"| Hotel ({nights} nights) | {_fmt_money(hotel, currency)} | {_fmt_money(night, currency)} × {nights} |",
+            f"| Activities & experiences | {_fmt_money(activities, currency)} | {act_detail} |",
+        ]
+        rows.append(f"| Food (restaurants) | {_fmt_money(food, currency)} | — |" if food and food > 0
+                    else "| Food | 0 | included at the hotel |")
+        rows += [
+            f"| **TOTAL** | **{_fmt_money(total, currency)}** | — |",
+            f"| Your budget | {_fmt_money(user_budget, currency)} | — |",
+            f"| Remaining | {rem} | — |",
+        ]
+        return "\n".join(rows)
     rows = [
         "## 💰 الميزانية الإجمالية",
         "",
@@ -2657,7 +2739,7 @@ def _compute_food_from_itinerary(draft: str, num_travelers):
 
 def _rebuild_budget_deterministic(draft, user_budget, num_nights, num_travelers,
                                   currency, travel_style, hotel_notes, flight_notes,
-                                  transport_override=None):
+                                  transport_override=None, allow_over=False):
     """Rebuild the budget from the plan's OWN chosen options, with the math in code.
     Returns (new_draft, applied: bool, reason: str). SAFE: applies only when the hotel
     and transport figures are both found AND the recomputed total stays within budget;
@@ -2686,17 +2768,24 @@ def _rebuild_budget_deterministic(draft, user_budget, num_nights, num_travelers,
             return draft, False, "low confidence (hotel or transport not found)"
         hotel = night_price * nights
         total = transport + hotel + activities + food
+        over_note = ""
         if total > user_budget:
-            # Recommended hotel × nights doesn't fit — that's a genuine over-budget case,
-            # handled elsewhere. Don't force an over-budget display here.
-            return draft, False, f"authoritative total {int(total):,} over budget {int(user_budget):,}"
+            if not allow_over:
+                # let the caller try cheaper options first (cut transport, etc.)
+                return draft, False, f"authoritative total {int(total):,} over budget {int(user_budget):,}"
+            # last resort: even the cheaper options don't fit → rebuild a CLEAN table anyway
+            # (never leave the LLM's broken/mismatched one) with an HONEST shortfall note.
+            over_note = (f"\n\n> ⚠️ **ملاحظة صادقة:** أقل تكلفة واقعية لهذه الرحلة ≈ "
+                         f"{int(total):,} {currency} — أعلى من ميزانيتك ({int(user_budget):,} {currency}) "
+                         f"بحوالي {int(total - user_budget):,} {currency}. الحلول: زوّد الميزانية، "
+                         f"قلّل عدد الليالي، أو اختر فندقًا أقل سعرًا.")
         new_section = _build_authoritative_budget(transport, hotel, activities, food,
                                                   nights, user_budget, currency, num_travelers,
-                                                  activities_detail=_act_detail)
+                                                  activities_detail=_act_detail) + over_note
         new_draft = _replace_budget_section(draft, new_section)
         reason = (f"transport={int(transport):,}, hotel={int(night_price):,}×{nights}={int(hotel):,}, "
                   f"activities={int(activities):,}, food={int(food):,}, total={int(total):,}, "
-                  f"remaining={int(user_budget-total):,}")
+                  f"remaining={int(user_budget-total):,}" + (" [OVER-BUDGET, honest note]" if over_note else ""))
         return new_draft, True, reason
     except Exception as e:
         return draft, False, f"error: {e}"
@@ -2889,7 +2978,7 @@ def _egypt_domestic_transport(question, destination, num_travelers, travel_style
 _USD_FX = {'$': 1.0, 'ج.م': 50.0, 'EGP': 50.0, '€': 0.92, '£': 0.79, 'ر.س': 3.75, 'د.إ': 3.67}
 
 _INTL_RT_USD = {  # region -> style -> USD round-trip per person (economy)
-    'gulf':          {'budget': 200, 'mid-range': 320, 'luxury': 480},
+    'gulf':          {'budget': 190, 'mid-range': 270, 'luxury': 370},  # RT economy Cairo↔Gulf ~$250-290 real
     'turkey':        {'budget': 200, 'mid-range': 300, 'luxury': 430},
     'levant':        {'budget': 180, 'mid-range': 280, 'luxury': 400},
     'europe':        {'budget': 280, 'mid-range': 450, 'luxury': 650},
@@ -3049,11 +3138,10 @@ def _enforce_transport_math(resp: str, num_travelers, currency) -> tuple:
         if trav < 2 or not resp:
             return resp, False
         lines = resp.splitlines()
-        # locate the transport section header
+        # locate the transport section header (Arabic OR English, incl. 'Flight Information')
         start = None
         for i, ln in enumerate(lines):
-            if re.match(r'\s*#{1,4}\s', ln) and re.search(
-                    r'(وسيلة النقل|المواصلات|النقل|Transport|Flights)', ln, re.IGNORECASE):
+            if re.match(r'\s*#{1,4}\s', ln) and _is_transport_heading(ln):
                 start = i
                 break
         if start is None:
@@ -3128,21 +3216,48 @@ def _replace_section(draft, header_keywords, new_section) -> str:
     return draft[:start].rstrip() + "\n\n" + new_section + "\n\n" + draft[end:].lstrip()
 
 
+def _is_transport_heading(header_text: str) -> bool:
+    """True when a markdown header is a TRANSPORT/flight section heading — in Arabic OR English.
+    Must catch the LLM's English 'Flight Information' / 'Flights' / 'Transport', otherwise the
+    LLM's flight section survives next to the deterministic one (the duplicate-transport bug)."""
+    t = re.sub(r'[#*_`✈️🚗🚌🚆🛫]', '', header_text).strip().lower()
+    return bool(re.search(r'النقل|المواصلات|الطيران|وسيلة|transport|flight', t))
+
+
 def _ensure_transport_section(resp: str, new_section: str) -> str:
-    """GUARANTEE a transport section exists: replace it if present, otherwise INSERT it (before
-    the budget / visa section, else append). Stops the 'transport section completely missing' bug
-    for destinations where the LLM forgot to write one."""
-    kw = ["وسائل النقل", "النقل", "المواصلات", "Transport", "Flights"]
-    replaced = _replace_section(resp, kw, new_section)
-    if replaced != resp:
-        return replaced                      # a transport section existed → replaced in place
-    # none existed → insert before the budget/visa section (its natural spot), else append
-    m = re.search(r'(?:^|\n)[ \t]*#{1,4}[^\n]*(?:💰|الميزانية|Budget|🛂|التأشيرة|Visa|🎯|الأنشطة)',
-                  resp, re.IGNORECASE)
-    if m:
-        pos = m.start() if m.start() == 0 else m.start() + 1
-        return resp[:pos].rstrip() + "\n\n" + new_section + "\n\n" + resp[pos:].lstrip()
-    return resp.rstrip() + "\n\n" + new_section + "\n"
+    """Keep EXACTLY ONE transport section. Replace the FIRST transport section (Arabic or English —
+    including the LLM's 'Flight Information') with the deterministic one and DELETE every other, so
+    the page never shows two transport tables with different prices. Inserts one if none exists."""
+    hdr_re = re.compile(r'(?:\A|\n)([ \t]*#{1,4}[ \t]*[^\n]*)')
+    spans = []
+    for m in hdr_re.finditer(resp):
+        if not _is_transport_heading(m.group(1)):
+            continue
+        start = m.start()
+        if resp[start] == '\n':
+            start += 1
+        rest = resp[m.end():]
+        nxt = re.search(r'\n[ \t]*#{1,4}[ \t]+\S|\n[ \t]*(?:🆘|📞|🏥|🧳|🎒|⚠️)', rest)
+        end = m.end() + nxt.start() if nxt else len(resp)
+        spans.append((start, end))
+    if not spans:
+        # none existed → insert before hotels/activities/budget/visa (its natural spot), else append
+        m = re.search(r'(?:^|\n)[ \t]*#{1,4}[^\n]*'
+                      r'(?:💰|الميزانية|Budget|🛂|التأشيرة|Visa|🎯|الأنشطة|Activities|Itinerary|الفنادق|Hotel)',
+                      resp, re.IGNORECASE)
+        if m:
+            pos = m.start() if m.start() == 0 else m.start() + 1
+            return resp[:pos].rstrip() + "\n\n" + new_section + "\n\n" + resp[pos:].lstrip()
+        return resp.rstrip() + "\n\n" + new_section + "\n"
+    spans.sort()
+    out, cur = [], 0
+    for i, (s, e) in enumerate(spans):
+        out.append(resp[cur:s])
+        if i == 0:
+            out.append(new_section.strip() + "\n")
+        cur = e
+    out.append(resp[cur:])
+    return re.sub(r'\n{3,}', '\n\n', "".join(out)).strip() + "\n"
 
 
 def _force_budget_fit(resp: str, flight_notes, hotel_notes, user_budget, num_nights,
@@ -4356,8 +4471,11 @@ Draft to fix:
                         _trip_origin(state.get('question', '')), _dest, cur_sym)
                     _anchor = t_info.get("per_person") or 0
                     if _live_pp and _anchor:
-                        _refined = min(max(_live_pp, _anchor * 0.85), _anchor * 2.2)
-                        if _refined > _anchor * 1.08:          # reality is meaningfully higher
+                        # Gentle: the route table is already calibrated to real round-trip fares,
+                        # so only nudge UP when live is clearly higher (>30%), and cap the rise —
+                        # don't push a mid-range trip onto a peak fare and blow the budget.
+                        _refined = min(max(_live_pp, _anchor), _anchor * 1.6)
+                        if _refined > _anchor * 1.30:          # reality is MUCH higher than table
                             _trav = t_info.get("trav") or max(int(num_travelers or 1), 1)
                             t_info = dict(t_info)
                             t_info["per_person"] = int(round(_refined))
@@ -4372,6 +4490,26 @@ Draft to fix:
                 resp, user_budget, num_nights, num_travelers, cur_sym, travel_style,
                 state.get("hotel_notes"), state.get("flight_notes"),
                 transport_override=override)
+            # User's rule: when OVER BUDGET, cut TRANSPORT first. Retry with the cheapest flight tier.
+            if (not bud_applied) and t_info and 'over budget' in (bud_reason or '') \
+               and _style_key(travel_style) != 'budget':
+                t_cheap = _compute_transport(state.get('question', ''), _dest,
+                                             num_travelers, 'budget', cur_sym)
+                if t_cheap and t_cheap.get('total', 10**9) < (override or 10**9):
+                    rb2, ap2, rs2 = _rebuild_budget_deterministic(
+                        resp, user_budget, num_nights, num_travelers, cur_sym, travel_style,
+                        state.get("hotel_notes"), state.get("flight_notes"),
+                        transport_override=t_cheap['total'])
+                    if ap2:
+                        resp_bud, bud_applied, bud_reason, t_info = rb2, True, rs2, t_cheap
+                        print("[CODE-LEVEL] Over budget → switched to cheapest flight tier to fit")
+            # Last resort: still over budget → force a CLEAN budget (never leave the LLM's broken
+            # one) with an honest shortfall note, so the budget ALWAYS matches the transport.
+            if not bud_applied and t_info:
+                resp_bud, bud_applied, bud_reason = _rebuild_budget_deterministic(
+                    resp, user_budget, num_nights, num_travelers, cur_sym, travel_style,
+                    state.get("hotel_notes"), state.get("flight_notes"),
+                    transport_override=t_info["total"], allow_over=True)
             if bud_applied:
                 resp = resp_bud
                 print(f"[CODE-LEVEL] Deterministic budget rebuilt: {bud_reason}")
