@@ -2758,24 +2758,46 @@ _NO_AIRPORT_DEST = {
     "ras sudr": ("cairo", 2500, 2.5),
 }
 
-# airport city reachable by flight from Cairo → round-trip per-person EGP by style
+# airport city reachable by flight from Cairo → ROUND-TRIP per-person EGP by style.
+# Calibrated to REAL EgyptAir/Air Cairo round-trip fares (verified Oct 2026): e.g. Cairo↔Marsa
+# Alam cheapest RT ≈ $237 (~11,850 EGP), typical ≈ $380 (~19,000). The old numbers were nearer a
+# ONE-WAY fare, which is why round trips showed up ~half price. Live search refines these further.
 _DOMESTIC_RT = {
-    "sharm el sheikh": {"budget": 6000, "mid-range": 9000, "luxury": 12000},
-    "hurghada":        {"budget": 6000, "mid-range": 9000, "luxury": 11000},
-    "luxor":           {"budget": 5000, "mid-range": 7500, "luxury": 10000},
-    "aswan":           {"budget": 6000, "mid-range": 8500, "luxury": 11000},
-    "marsa alam":      {"budget": 7000, "mid-range": 10000, "luxury": 13000},
+    "sharm el sheikh": {"budget": 9000,  "mid-range": 13000, "luxury": 17000},
+    "hurghada":        {"budget": 9000,  "mid-range": 13000, "luxury": 17000},
+    "luxor":           {"budget": 8500,  "mid-range": 12000, "luxury": 16000},
+    "aswan":           {"budget": 9500,  "mid-range": 13500, "luxury": 18000},
+    "marsa alam":      {"budget": 10500, "mid-range": 15000, "luxury": 19000},
 }
+
+
+def _ar_norm(t: str) -> str:
+    """Normalise Arabic so spelling variants match: أإآٱ→ا, ى→ي, ة→ه, ؤ→و, ئ→ي, drop diacritics
+    and tatweel. This is why 'مرسي علم' and 'مرسى علم' (ى vs ي) must resolve to the same city —
+    otherwise the whole deterministic transport/budget chain silently fails for that trip."""
+    t = (t or "").strip().lower()
+    t = t.translate(str.maketrans("أإآٱىؤئة", "اااايويه"))
+    t = re.sub(r'[ً-ْٰـ]', '', t)     # harakat + tatweel
+    return re.sub(r'\s+', ' ', t).strip()
+
+
+# normalised view of the synonym table, built once (longest keys first for substring matching)
+_CITY_SYN_NORM = {_ar_norm(k): v for k, v in _CITY_SYN.items()}
+_CITY_SYN_NORM_ITEMS = sorted(_CITY_SYN_NORM.items(), key=lambda kv: len(kv[0]), reverse=True)
 
 
 def _norm_city(s: str) -> str:
     s = (s or "").strip().lower()
     s = re.split(r'[،,]', s)[0].strip()         # drop country suffix
+    s = re.sub(r'^(?:فندق|منتجع|مدينة|مطار|قرية)\s+', '', s)   # drop a leading descriptor
     s = re.sub(r'\s+', ' ', s)
-    if s in _CITY_SYN:
+    if s in _CITY_SYN:                           # fast path: exact raw match
         return _CITY_SYN[s]
-    for k, v in _CITY_SYN.items():
-        if k and k in s:
+    n = _ar_norm(s)                              # spelling-insensitive match
+    if n in _CITY_SYN_NORM:
+        return _CITY_SYN_NORM[n]
+    for k, v in _CITY_SYN_NORM_ITEMS:
+        if k and k in n:
             return v
     return s
 
